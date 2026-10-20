@@ -7,12 +7,13 @@ PlayCount pays open-source projects for what developers' coding agents actually 
 ### Money
 
 **Budget**:
-The fixed amount a developer commits to pay each month, split among the projects their agent used.
+The fixed amount a developer commits to pay each month, split only among the projects their own agent played.
 _Avoid_: Subscription, tip, donation
 
 **Pool**:
 The money PlayCount holds between collecting developers' budgets and paying projects.
 _Avoid_: Wallet, escrow, balance
+A developer's budget never pays for another developer's plays.
 
 **Settlement**:
 The monthly event that turns a period's plays into payouts to projects, in one batch.
@@ -40,13 +41,17 @@ _Avoid_: Score, ranking, split ratio
 One instance of a developer's agent relying on a project: reading its docs or writing code that imports it. Package installs are not plays.
 _Avoid_: Use, hit, call, download
 
+**Play log**:
+The record of a developer's plays (project, kind of play, lines written against it) that PlayCount receives; it never contains source code.
+_Avoid_: Telemetry, usage data, transcript
+
 **Project**:
 An open-source package that can earn royalties; it has at most one payout address, and how its team splits money is outside PlayCount.
 _Avoid_: Maintainer, library, dependency (a dependency is any installed package, played or not)
 Only npm packages are projects for now.
 
 **Claim**:
-A maintainer proving control of a project by signing in with GitHub and giving the project's payout address.
+A maintainer proving control of a project by signing in with GitHub, having push access to the repo named in the package's npm `repository` field, and giving the project's payout address.
 _Avoid_: Registration, verification, onboarding
 
 **Developer**:

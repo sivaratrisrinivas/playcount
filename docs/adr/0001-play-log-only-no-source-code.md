@@ -1,0 +1,3 @@
+# Weighting sees the play log only, never source code
+
+To propose a weighting, Claude reads only the play log: which project, which kind of play (docs read or written import), and how many lines were written against it. Session transcripts and source code never leave the developer's machine. We chose this over sending full transcripts, which would have given Claude richer evidence of contribution, because a tool that ships developers' code to a third party would not be trusted or adopted. The promise is hard to walk back once developers rely on it, so any richer evidence must be derived on the developer's machine and sent only as play-log fields.
