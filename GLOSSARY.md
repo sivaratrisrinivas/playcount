@@ -22,6 +22,18 @@ _Avoid_: Payment run, distribution
 The amount owed to one project from one settlement.
 _Avoid_: Tip, share, payout (a payout is the transfer that delivers a royalty)
 
+**Unclaimed royalty**:
+A royalty owed to a project that has no payout address yet; it stays in the pool until the project is claimed.
+_Avoid_: Pending payout, escrowed funds
+
+**Rollover**:
+A royalty under $1 carried into the next settlement instead of being paid.
+_Avoid_: Carry-forward, remainder
+
+**Weighting**:
+The share of a developer's budget each project gets in a settlement, proposed by Claude from the period's plays with a one-line reason and approved by the developer.
+_Avoid_: Score, ranking, split ratio
+
 ### Usage
 
 **Play**:
@@ -31,6 +43,11 @@ _Avoid_: Use, hit, call, download
 **Project**:
 An open-source package that can earn royalties; it has at most one payout address, and how its team splits money is outside PlayCount.
 _Avoid_: Maintainer, library, dependency (a dependency is any installed package, played or not)
+Only npm packages are projects for now.
+
+**Claim**:
+A maintainer proving control of a project by signing in with GitHub and giving the project's payout address.
+_Avoid_: Registration, verification, onboarding
 
 **Developer**:
 A person who funds a budget and whose coding agent produces plays.
