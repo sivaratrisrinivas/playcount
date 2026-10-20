@@ -42,7 +42,7 @@ What this means for PlayCount:
 - **Fee is $0.25 per item** in the sandbox (US→US), paid by the sender. That is large next to small royalties, which supports the $1 rollover floor.
 - **PayPal holds an UNCLAIMED payout for only 30 days**, then returns it. Our decision is to hold unclaimed royalties *indefinitely*. So PlayCount must keep unclaimed royalties in its own ledger and send a payout only after a maintainer claims (GitHub sign-in, push access) and gives a PayPal email. Never pay out to a guessed maintainer email.
 
-### 3. Subscription: created; approval pending
+### 3. Subscription: yes
 
 ```
 POST /v1/catalogs/products   ->  HTTP 201  PROD-72R51407FB483140M
@@ -51,4 +51,13 @@ POST /v1/billing/subscriptions -> HTTP 201  I-3LEKCLHWYE52  status APPROVAL_PEND
      approve link: https://www.sandbox.paypal.com/webapps/billing/subscriptions?ba_token=…
 ```
 
-Approval needs a buyer to log in on the approve link with the sandbox personal account. Result: _pending_.
+Srinivas opened the approve link, logged in as the sandbox personal account, picked the sandbox bank, and subscribed. PayPal redirected to `return_url` with `?subscription_id=I-3LEKCLHWYE52&ba_token=…`. Then:
+
+```
+GET /v1/billing/subscriptions/I-3LEKCLHWYE52  ->  HTTP 200
+  status ACTIVE  status_update_time 2026-10-20T18:57:36Z
+  billing_info.last_payment 10.0 USD at 2026-10-20T18:57:35Z   (first month charged at approval)
+  billing_info.next_billing_time 2026-11-20T10:00:00Z  failed_payments_count 0
+```
+
+Approval is a buyer step in the browser, so the PlayCount signup page must send the developer to the approve link (or use the JS SDK button) and read `subscription_id` on return. The first cycle is charged right away, so a new developer's Budget is funded at signup.
