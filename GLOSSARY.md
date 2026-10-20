@@ -13,7 +13,7 @@ _Avoid_: Subscription, tip, donation
 **Pool**:
 The money PlayCount holds between collecting developers' budgets and paying projects.
 _Avoid_: Wallet, escrow, balance
-A developer's budget never pays for another developer's plays.
+A developer's budget never pays for another developer's plays. PayPal payout fees come out of the pool, so a project receives its full royalty.
 
 **Settlement**:
 The monthly event that turns a period's plays into payouts to projects, in one batch.
@@ -28,11 +28,11 @@ A royalty owed to a project that has no payout address yet; it stays in the pool
 _Avoid_: Pending payout, escrowed funds
 
 **Rollover**:
-A royalty under $1 carried into the next settlement instead of being paid.
+A royalty under $1, or a budget whose agent made no plays that month, carried into the developer's next settlement instead of being paid.
 _Avoid_: Carry-forward, remainder
 
 **Weighting**:
-The share of a developer's budget each project gets in a settlement, proposed by Claude from the period's plays with a one-line reason and approved by the developer.
+The share of a developer's budget each project gets in a settlement, proposed by Claude from the period's plays with a one-line reason and approved by the developer, or auto-approved after 7 days.
 _Avoid_: Score, ranking, split ratio
 
 ### Usage
