@@ -1,0 +1,2 @@
+{ "hooks": { "PostToolUse": [ { "matcher": "Write|Edit|MultiEdit|mcp__playcount__.*|mcp__context7__.*", "hooks": [ { "type": "command", "command": "node /home/claude/playcount/prototypes/play-capture/hook.mjs" } ] } ] },
+  "permissions": { "allow": ["Edit", "Write", "MultiEdit", "Read", "mcp__playcount__read_docs"] } }
