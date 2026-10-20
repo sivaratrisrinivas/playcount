@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PROTOTYPE (throwaway): probe PayPal sandbox for PlayCount's money flow.
-# Auth: none here. The cloud environment's network secret injects the OAuth
-# token for api-m.sandbox.paypal.com. Fallback: set PAYPAL_CLIENT_ID and
+# Auth: none here. The cloud environment's network secret (type Basic) adds
+# HTTP Basic auth for api-m.sandbox.paypal.com. Fallback: set PAYPAL_CLIENT_ID and
 # PAYPAL_CLIENT_SECRET and this script fetches a token itself.
 #
 #   ./probe.sh auth                       # 1. can we reach the sandbox?
