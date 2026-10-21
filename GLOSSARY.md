@@ -35,6 +35,14 @@ _Avoid_: Carry-forward, remainder
 PlayCount's record of every Play, Budget, Weighting, Royalty and payout; the Pool is derived from it, never kept as a separate balance.
 _Avoid_: Database, books, account
 
+**Period**:
+The calendar month (UTC) whose plays one settlement covers, written YYYY-MM.
+_Avoid_: Cycle, window, billing month
+
+**Statement**:
+A developer's per-project totals for one period: import plays, docs plays and lines written.
+_Avoid_: Report, invoice, bill
+
 **Weighting**:
 The share of a developer's budget each project gets in a settlement, proposed by Claude from the period's plays with a one-line reason and approved by the developer, or auto-approved after 7 days.
 _Avoid_: Score, ranking, split ratio
