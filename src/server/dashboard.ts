@@ -26,7 +26,7 @@ export function dashboardPage(name: string, plays: Play[]) {
       <thead><tr><th>Project</th><th>Kind</th><th>Lines written</th><th>File</th><th>When</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`
-      : html`<p>No Plays yet. They appear here as your Agent writes code that imports npm packages.</p>`}
+      : html`<p>No Plays yet. They appear here as your Agent writes code that imports npm packages or reads their docs through the PlayCount docs tool.</p>`}
   </main>
 </body>
 </html>`;

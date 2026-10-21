@@ -1,18 +1,23 @@
 // Turns one Claude Code tool event into Plays. Pure: no I/O, so it can be tested
 // table-driven (seam 2) and runs on the Developer's machine inside the hook.
 import { builtinModules } from "node:module";
-import type { Play } from "../play.ts";
+import { isProjectName, type Play } from "../play.ts";
 
 export type ToolEvent = {
   tool_name: string;
   tool_input: Record<string, unknown>;
+  tool_response?: unknown;
   session_id: string;
 };
+
+// The PlayCount docs tool as Claude Code names it: server "playcount", tool "read_docs".
+// Only our own tool counts; Context7 and WebFetch reads are out of scope for v1.
+export const DOCS_TOOL = "mcp__playcount__read_docs";
 
 const builtins = new Set(builtinModules.flatMap((m) => [m, `node:${m}`]));
 
 // The npm package an import specifier credits, or null when it is not a Project.
-function projectOf(spec: string): string | null {
+export function projectOf(spec: string): string | null {
   if (spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("node:")) return null;
   const parts = spec.split("/");
   if (builtins.has(spec) || builtins.has(parts[0]!)) return null;
@@ -71,7 +76,20 @@ function extensionOf(path: unknown): string | undefined {
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : undefined;
 }
 
+function failed(response: unknown): boolean {
+  return typeof response === "object" && response !== null && (response as { isError?: unknown }).isError === true;
+}
+
+function docsPlays(event: ToolEvent, at: string): Play[] {
+  const pkg = event.tool_input.package;
+  if (typeof pkg !== "string" || failed(event.tool_response)) return [];
+  const project = projectOf(pkg.trim());
+  if (!project || !isProjectName(project)) return [];
+  return [{ kind: "docs", project, session_id: event.session_id, at }];
+}
+
 export function playsFromToolEvent(event: ToolEvent, at: string): Play[] {
+  if (event.tool_name === DOCS_TOOL) return docsPlays(event, at);
   if (event.tool_name !== "Write") return [];
   const content = event.tool_input.content;
   if (typeof content !== "string") return [];

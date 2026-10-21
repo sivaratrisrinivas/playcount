@@ -16,12 +16,20 @@ const event = {
   tool_response: { success: true },
 };
 
-function runHook(env: Record<string, string>): Promise<{ code: number | null; ms: number }> {
+const readDocsEvent = {
+  session_id: "s2",
+  hook_event_name: "PostToolUse",
+  tool_name: "mcp__playcount__read_docs",
+  tool_input: { package: "zod" },
+  tool_response: [{ type: "text", text: "# Zod" }],
+};
+
+function runHook(env: Record<string, string>, toolEvent: object = event): Promise<{ code: number | null; ms: number }> {
   const started = Date.now();
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [HOOK], { env: { ...process.env, ...env }, stdio: ["pipe", "ignore", "ignore"] });
     child.on("close", (code) => resolve({ code, ms: Date.now() - started }));
-    child.stdin.end(JSON.stringify(event));
+    child.stdin.end(JSON.stringify(toolEvent));
   });
 }
 
@@ -40,6 +48,14 @@ it("sends the Plays from a Write to PlayCount", async () => {
   expect(ledger.playsOf(dev.id)).toEqual([
     expect.objectContaining({ kind: "import", project: "zod", lines_written: 1, file_ext: "ts", session_id: "s1" }),
   ]);
+});
+
+it("sends a docs Play when the Agent reads docs through the PlayCount docs tool, and it shows on the dashboard", async () => {
+  const { code } = await runHook({ PLAYCOUNT_URL: server.url, PLAYCOUNT_KEY: dev.key }, readDocsEvent);
+  expect(code).toBe(0);
+  expect(ledger.playsOf(dev.id)).toEqual([expect.objectContaining({ kind: "docs", project: "zod", session_id: "s2" })]);
+  const page = await (await fetch(server.url)).text();
+  expect(page).toMatch(/<td>zod<\/td><td>docs<\/td>/);
 });
 
 it("never fails the Agent's tool call when PlayCount is unreachable", async () => {
