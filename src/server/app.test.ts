@@ -183,6 +183,13 @@ describe("Dashboard", () => {
     expect(html).toContain("sortable: true");
   });
 
+  it("sets up the statement grid even before any Plays, so live Plays can fill it", async () => {
+    const html = await (await fetch(`${server.url}/`)).text();
+    expect(statementIn(html)).toEqual({ period: "2026-10", projects: [] });
+    expect(html).toContain('id="statement-grid"');
+    expect(html).toContain('addEventListener("statement"');
+  });
+
   it("serves AG Grid itself, so the dashboard needs no CDN", async () => {
     const res = await fetch(`${server.url}/vendor/ag-grid-community.min.js`);
     expect(res.status).toBe(200);
@@ -203,15 +210,17 @@ async function openStream(headers: Record<string, string> = {}, query = "") {
   const res = await fetch(`${server.url}/api/plays/stream${query}`, { headers, signal: controller.signal });
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
-  async function next(count: number) {
+  // Collects `count` events of one kind: Play rows (the default), "statement" or "reset".
+  async function next(count: number, kind = "play") {
     const events: { event?: string; id?: string; data: string }[] = [];
     while (events.length < count) {
       const blocks = buffer.split("\n\n");
       buffer = blocks.pop()!;
       for (const block of blocks) {
         const field = (name: string) => [...block.matchAll(new RegExp(`^${name}: ?(.*)$`, "gm"))].map((m) => m[1]);
-        if (block.startsWith(":") || field("event")[0] === "hello") continue;
-        events.push({ event: field("event")[0], id: field("id")[0], data: field("data").join("\n") });
+        const event = field("event")[0];
+        if ((event ?? "play") !== kind) continue;
+        events.push({ event, id: field("id")[0], data: field("data").join("\n") });
       }
       if (events.length >= count) break;
       const { value, done } = await reader.read();
@@ -276,10 +285,25 @@ describe("Live Play stream", () => {
     stream.close();
   });
 
+  it("pushes the current period's statement after new Plays", async () => {
+    await postPlays({ plays: [play("zod", { lines_written: 2 })] }, ada.key);
+    const stream = await openStream({}, `?since=${await pageCursor()}`);
+    await postPlays({ plays: [play("express"), play("zod", { kind: "docs", lines_written: 0 }), play("hono", { at: "2026-09-30T00:00:00.000Z" })] }, ada.key);
+    const [statement] = await stream.next(1, "statement");
+    expect(JSON.parse(statement.data)).toEqual({
+      period: "2026-10",
+      projects: [
+        { project: "zod", import_plays: 1, docs_plays: 1, lines_written: 2 },
+        { project: "express", import_plays: 1, docs_plays: 0, lines_written: 3 },
+      ],
+    });
+    stream.close();
+  });
+
   it("tells a browser to reload when its cursor is from an earlier run of the service", async () => {
     await postPlays({ plays: [play("zod")] }, ada.key);
     const stream = await openStream({ "last-event-id": "earlierrun.1" });
-    const [event] = await stream.next(1);
+    const [event] = await stream.next(1, "reset");
     expect(event.event).toBe("reset");
     stream.close();
   });

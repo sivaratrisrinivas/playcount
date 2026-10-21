@@ -17,10 +17,9 @@ export function dashboardPage(name: string, plays: Play[], statement: Statement,
 <body>
   <main>
     <h1>PlayCount</h1>
-    <h2>Statement for ${statement.period}</h2>
-    ${statement.projects.length
-      ? html`<div id="statement-grid"></div>`
-      : html`<p>No Plays this period yet.</p>`}
+    <h2 id="statement-title">Statement for ${statement.period}</h2>
+    <p id="statement-empty" ${statement.projects.length ? "hidden" : ""}>No Plays this period yet.</p>
+    <div id="statement-grid" ${statement.projects.length ? "" : "hidden"}></div>
     <h2>Plays</h2>
     <p class="summary">
       ${name}'s Plays: <strong id="count" data-cursor="${cursor}">${plays.length}</strong>
@@ -32,11 +31,9 @@ export function dashboardPage(name: string, plays: Play[], statement: Statement,
       <tbody>${plays.map(playRow)}</tbody>
     </table>
   </main>
-  ${statement.projects.length
-    ? html`<script type="application/json" id="statement">${raw(JSON.stringify(statement).replace(/</g, "\\u003c"))}</script>
+  <script type="application/json" id="statement">${raw(JSON.stringify(statement).replace(/</g, "\\u003c"))}</script>
   <script src="/vendor/ag-grid-community.min.js"></script>
-  <script>${raw(GRID)}</script>`
-    : ""}
+  <script>${raw(GRID)}</script>
   <script>${raw(SCRIPT)}</script>
 </body>
 </html>`;
@@ -64,6 +61,7 @@ const SCRIPT = `
   stream.onopen = () => setLive("live", "live");
   stream.onerror = () => setLive("connecting", "reconnecting");
   stream.addEventListener("reset", () => location.reload());
+  stream.addEventListener("statement", (event) => showStatement(JSON.parse(event.data)));
   stream.onmessage = (event) => {
     const tbody = table.tBodies[0];
     tbody.insertAdjacentHTML("afterbegin", event.data);
@@ -79,15 +77,17 @@ const SCRIPT = `
 })();
 `;
 
-// Renders the statement with AG Grid; every column sorts on a header click.
+// Renders the statement with AG Grid; every column sorts on a header click. showStatement
+// replaces it with a newer one from the live Play stream, flashing the cells that changed.
 const GRID = `
   const statement = JSON.parse(document.getElementById("statement").textContent);
   const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-  agGrid.createGrid(document.getElementById("statement-grid"), {
+  const statementGrid = agGrid.createGrid(document.getElementById("statement-grid"), {
     theme: agGrid.themeQuartz.withPart(dark ? agGrid.colorSchemeDark : agGrid.colorSchemeLight),
     domLayout: "autoHeight",
     rowData: statement.projects,
-    defaultColDef: { sortable: true, flex: 1 },
+    getRowId: (params) => params.data.project,
+    defaultColDef: { sortable: true, flex: 1, enableCellChangeFlash: true },
     columnDefs: [
       { field: "project", headerName: "Project", flex: 2 },
       { field: "import_plays", headerName: "Import Plays" },
@@ -95,6 +95,12 @@ const GRID = `
       { field: "lines_written", headerName: "Lines written" },
     ],
   });
+  function showStatement(next) {
+    document.getElementById("statement-title").textContent = "Statement for " + next.period;
+    statementGrid.setGridOption("rowData", next.projects);
+    document.getElementById("statement-grid").hidden = next.projects.length === 0;
+    document.getElementById("statement-empty").hidden = next.projects.length > 0;
+  }
 `;
 
 const STYLE = `

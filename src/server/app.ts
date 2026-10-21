@@ -66,10 +66,11 @@ export function createApp({ ledger, developers, dashboardDeveloperId, clock = ()
     return c.json({ recorded: plays.length }, 202);
   });
 
-  // The dashboard Developer's live Play stream, as Server-Sent Events. Each event is one Play,
-  // rendered as a dashboard row. Its id is a cursor: this service run, then the Play's number
-  // in the Play log, which is the Developer's count once that Play is shown. A reconnecting
-  // browser sends the last cursor it saw and gets every Play it missed.
+  // The dashboard Developer's live Play stream, as Server-Sent Events. Each Play event is one
+  // Play, rendered as a dashboard row, and its id is a cursor: this service run, then the Play's
+  // number in the Play log, which is the Developer's count once that Play is shown. A reconnecting
+  // browser sends the last cursor it saw and gets every Play it missed. "statement" events carry
+  // the current period's statement as it changes.
   app.get("/api/plays/stream", (c) => {
     if (!developers.byId(dashboardDeveloperId)) return c.notFound();
     return streamSSE(c, async (stream) => {
@@ -81,8 +82,19 @@ export function createApp({ ledger, developers, dashboardDeveloperId, clock = ()
       const write = (next: () => Promise<unknown>) => {
         writes = writes.then(() => (stream.aborted ? undefined : next())).then(noop, noop);
       };
-      const sendPlay = (play: Play, number: number) =>
+      // After new Plays, one statement follows them, computed when it is written, so a batch
+      // of Plays costs one statement rather than one each.
+      let statementQueued = false;
+      const sendPlay = (play: Play, number: number) => {
         write(() => stream.writeSSE({ id: cursor(number), data: String(playRow(play)) }));
+        if (statementQueued) return;
+        statementQueued = true;
+        write(() => {
+          statementQueued = false;
+          const statement = statementOf(ledger.playsOf(dashboardDeveloperId), periodOf(clock()));
+          return stream.writeSSE({ event: "statement", data: JSON.stringify(statement) });
+        });
+      };
 
       const stop = ledger.onPlays(dashboardDeveloperId, sendPlay);
       stream.onAbort(stop);
