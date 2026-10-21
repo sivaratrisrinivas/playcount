@@ -146,6 +146,14 @@ describe("Period statement", () => {
   });
 });
 
+describe("Health check", () => {
+  it("reports the service is up", async () => {
+    const res = await fetch(`${server.url}/health`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ok" });
+  });
+});
+
 describe("Dashboard", () => {
   it("lists the Developer's Plays", async () => {
     await postPlays({ plays: [play("zod", { lines_written: 4, file_ext: "tsx" })] }, ada.key);

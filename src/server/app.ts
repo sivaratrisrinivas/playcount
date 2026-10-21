@@ -59,6 +59,9 @@ export function createApp({ ledger, developers, dashboardDeveloperId, clock = ()
     return c.json(statementOf(ledger.playsOf(developer.id), period));
   });
 
+  // Render polls this before switching traffic to a new deploy.
+  app.get("/health", (c) => c.json({ status: "ok" }));
+
   app.get("/", (c) => {
     const developer = developers.byId(dashboardDeveloperId);
     const plays = developer ? ledger.playsOf(developer.id).reverse() : [];
