@@ -31,6 +31,10 @@ _Avoid_: Pending payout, escrowed funds
 A royalty under $1, or a budget whose agent made no plays that month, carried into the developer's next settlement instead of being paid.
 _Avoid_: Carry-forward, remainder
 
+**Ledger**:
+PlayCount's record of every Play, Budget, Weighting, Royalty and payout; the Pool is derived from it, never kept as a separate balance.
+_Avoid_: Database, books, account
+
 **Weighting**:
 The share of a developer's budget each project gets in a settlement, proposed by Claude from the period's plays with a one-line reason and approved by the developer, or auto-approved after 7 days.
 _Avoid_: Score, ranking, split ratio
@@ -53,6 +57,10 @@ Only npm packages are projects for now.
 **Claim**:
 A maintainer proving control of a project by signing in with GitHub, having push access to the repo named in the package's npm `repository` field, and giving the project's payout address.
 _Avoid_: Registration, verification, onboarding
+
+**PlayCount key**:
+The secret a Developer's capture hook sends with each batch of Plays so PlayCount knows whose Plays they are.
+_Avoid_: API key, token, password
 
 **Developer**:
 A person who funds a budget and whose coding agent produces plays.
