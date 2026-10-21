@@ -19,7 +19,8 @@ services:
         sync: false
       - key: PAYPAL_CLIENT_SECRET
         sync: false
-      - key: ANTHROPIC_API_KEY
+      # Claude is reached through AssemblyAI's LLM Gateway, not the Anthropic API.
+      - key: ASSEMBLYAI_API_KEY
         sync: false
       - key: GITHUB_CLIENT_ID
         sync: false
