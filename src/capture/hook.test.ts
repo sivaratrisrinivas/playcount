@@ -105,7 +105,7 @@ it("queues Plays locally when PlayCount is unreachable and sends them on a later
 
 it("queues Plays when PlayCount errors, and never fails the tool call", async () => {
   const failing = await startServer({
-    ledger: { recordPlays: () => { throw new Error("boom"); }, playsOf: () => [] },
+    ledger: { recordPlays: () => { throw new Error("boom"); }, playsOf: () => [], onPlays: () => () => {} },
     developers: inMemoryDevelopers([dev]),
     dashboardDeveloperId: dev.id,
     port: 0,
