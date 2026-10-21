@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startServer, type RunningServer } from "./server.ts";
 import { inMemoryLedger, type Ledger } from "./ledger.ts";
 import { inMemoryDevelopers } from "./developers.ts";
@@ -89,21 +89,21 @@ describe("Dashboard", () => {
   });
 });
 
-// Reads Server-Sent Events from the live Play stream until `count` events arrive.
+// Reads Server-Sent Events from the live Play stream until `count` Play events arrive.
 async function openStream(headers: Record<string, string> = {}, query = "") {
   const controller = new AbortController();
   const res = await fetch(`${server.url}/api/plays/stream${query}`, { headers, signal: controller.signal });
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
   async function next(count: number) {
-    const events: { id: string; data: unknown }[] = [];
+    const events: { event?: string; id?: string; data: string }[] = [];
     while (events.length < count) {
       const blocks = buffer.split("\n\n");
       buffer = blocks.pop()!;
       for (const block of blocks) {
-        const id = block.match(/^id: (.*)$/m)?.[1];
-        const data = block.match(/^data: (.*)$/m)?.[1];
-        if (id !== undefined && data !== undefined) events.push({ id, data: JSON.parse(data) });
+        const field = (name: string) => [...block.matchAll(new RegExp(`^${name}: ?(.*)$`, "gm"))].map((m) => m[1]);
+        if (block.startsWith(":") || field("event")[0] === "hello") continue;
+        events.push({ event: field("event")[0], id: field("id")[0], data: field("data").join("\n") });
       }
       if (events.length >= count) break;
       const { value, done } = await reader.read();
@@ -115,15 +115,25 @@ async function openStream(headers: Record<string, string> = {}, query = "") {
   return { res, next, close: () => controller.abort() };
 }
 
+// The cursor the dashboard page hands to the live Play stream.
+async function pageCursor() {
+  const html = await (await fetch(`${server.url}/`)).text();
+  return html.match(/data-cursor="([^"]+)"/)![1];
+}
+
+const countOf = (id?: string) => id?.split(".")[1];
+
 describe("Live Play stream", () => {
-  it("pushes the dashboard Developer's Plays as they are ingested, numbered by count", async () => {
+  it("pushes the dashboard Developer's Plays as rows as they are ingested, with their count", async () => {
     const stream = await openStream();
     expect(stream.res.status).toBe(200);
     expect(stream.res.headers.get("content-type")).toContain("text/event-stream");
-    await postPlays({ plays: [play("zod"), play("express")] }, ada.key);
+    await postPlays({ plays: [play("zod", { lines_written: 4, file_ext: "tsx" }), play("express")] }, ada.key);
     const events = await stream.next(2);
-    expect(events.map((e) => e.id)).toEqual(["1", "2"]);
-    expect(events.map((e) => (e.data as { project: string }).project)).toEqual(["zod", "express"]);
+    expect(events.map((e) => countOf(e.id))).toEqual(["1", "2"]);
+    expect(events[0].data).toContain("<td>zod</td>");
+    expect(events[0].data).toContain("<td>4</td>");
+    expect(events[1].data).toContain("<td>express</td>");
     stream.close();
   });
 
@@ -132,42 +142,59 @@ describe("Live Play stream", () => {
     await postPlays({ plays: [play("left-pad")] }, bob.key);
     await postPlays({ plays: [play("zod")] }, ada.key);
     const [first] = await stream.next(1);
-    expect(first).toEqual({ id: "1", data: expect.objectContaining({ project: "zod" }) });
+    expect(countOf(first.id)).toBe("1");
+    expect(first.data).toContain("zod");
     stream.close();
   });
 
   it("starts after the Plays the page already shows", async () => {
     await postPlays({ plays: [play("zod")] }, ada.key);
-    const stream = await openStream({}, "?since=1");
+    const stream = await openStream({}, `?since=${await pageCursor()}`);
     await postPlays({ plays: [play("express")] }, ada.key);
-    expect(await stream.next(1)).toEqual([{ id: "2", data: expect.objectContaining({ project: "express" }) }]);
+    const [event] = await stream.next(1);
+    expect(countOf(event.id)).toBe("2");
+    expect(event.data).toContain("express");
     stream.close();
   });
 
   it("replays the Plays missed while disconnected, so the count is not lost", async () => {
-    await postPlays({ plays: [play("zod"), play("express"), play("hono")] }, ada.key);
-    const stream = await openStream({ "last-event-id": "1" }, "?since=0");
+    await postPlays({ plays: [play("zod")] }, ada.key);
+    const lastSeen = await pageCursor();
+    await postPlays({ plays: [play("express"), play("hono")] }, ada.key);
+    const stream = await openStream({ "last-event-id": lastSeen }, "?since=stale.0");
     const events = await stream.next(2);
-    expect(events.map((e) => e.id)).toEqual(["2", "3"]);
-    expect(events.map((e) => (e.data as { project: string }).project)).toEqual(["express", "hono"]);
+    expect(events.map((e) => countOf(e.id))).toEqual(["2", "3"]);
+    expect(events.map((e) => e.data.match(/<td>([^<]+)<\/td>/)![1])).toEqual(["express", "hono"]);
     stream.close();
   });
 
-  it("stops pushing to a stream once its connection drops", async () => {
-    const stream = await openStream();
+  it("tells a browser to reload when its cursor is from an earlier run of the service", async () => {
+    await postPlays({ plays: [play("zod")] }, ada.key);
+    const stream = await openStream({ "last-event-id": "earlierrun.1" });
+    const [event] = await stream.next(1);
+    expect(event.event).toBe("reset");
     stream.close();
-    await new Promise((r) => setTimeout(r, 20));
-    const res = await postPlays({ plays: [play("zod")] }, ada.key);
-    expect(res.status).toBe(202);
-    expect(ledger.playsOf(ada.id)).toHaveLength(1);
+  });
+
+  it("stops listening to the Ledger once its connection drops", async () => {
+    const stops: string[] = [];
+    const onPlays = ledger.onPlays.bind(ledger);
+    vi.spyOn(ledger, "onPlays").mockImplementation((id, listener) => {
+      const stop = onPlays(id, listener);
+      return () => (stops.push(id), stop());
+    });
+    const stream = await openStream();
+    await vi.waitFor(() => expect(ledger.onPlays).toHaveBeenCalled());
+    stream.close();
+    await vi.waitFor(() => expect(stops).toContain(ada.id));
   });
 });
 
 describe("Live dashboard", () => {
-  it("subscribes to the live Play stream from the count it rendered", async () => {
+  it("subscribes to the live Play stream from the Plays it rendered", async () => {
     await postPlays({ plays: [play("zod"), play("express")] }, ada.key);
     const html = await (await fetch(`${server.url}/`)).text();
-    expect(html).toContain('data-count="2"');
+    expect(html).toMatch(/data-cursor="[a-z0-9]+\.2"/);
     expect(html).toContain("/api/plays/stream");
   });
 });

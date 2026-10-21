@@ -3,13 +3,8 @@ import type { Play } from "../play.ts";
 
 // The Developer's dashboard: their Plays, newest first. It renders the Plays recorded so far,
 // then follows the live Play stream so the counter and list update while the Agent works.
-export function dashboardPage(name: string, plays: Play[]) {
-  const rows = plays.map(
-    (p) => html`<tr>
-      <td>${p.project}</td><td>${p.kind}</td><td>${p.lines_written ?? ""}</td><td>${p.file_ext ?? ""}</td>
-      <td><time datetime="${p.at}">${when(p.at)}</time></td>
-    </tr>`,
-  );
+// `cursor` marks where the page's Plays end in the live Play stream.
+export function dashboardPage(name: string, plays: Play[], cursor: string) {
   return html`<!doctype html>
 <html lang="en">
 <head>
@@ -22,13 +17,13 @@ export function dashboardPage(name: string, plays: Play[]) {
   <main>
     <h1>PlayCount</h1>
     <p class="summary">
-      ${name}'s Plays: <strong id="count" data-count="${plays.length}">${plays.length}</strong>
+      ${name}'s Plays: <strong id="count" data-cursor="${cursor}">${plays.length}</strong>
       <span id="live" class="live" data-state="connecting">connecting</span>
     </p>
     <p id="empty" ${plays.length ? "hidden" : ""}>No Plays yet. They appear here as your Agent writes code that imports npm packages.</p>
     <table id="plays" ${plays.length ? "" : "hidden"}>
       <thead><tr><th>Project</th><th>Kind</th><th>Lines written</th><th>File</th><th>When</th></tr></thead>
-      <tbody>${rows}</tbody>
+      <tbody>${plays.map(playRow)}</tbody>
     </table>
   </main>
   <script>${raw(SCRIPT)}</script>
@@ -36,42 +31,36 @@ export function dashboardPage(name: string, plays: Play[]) {
 </html>`;
 }
 
-// Keep in step with `when` in SCRIPT, so streamed rows look like rendered ones.
-function when(at: string) {
-  return `${at.slice(0, 16).replace("T", " ")} UTC`;
+// One Play as a dashboard row, both in the page and in the live Play stream.
+export function playRow(p: Play) {
+  return html`<tr>
+      <td>${p.project}</td><td>${p.kind}</td><td>${p.lines_written ?? ""}</td><td>${p.file_ext ?? ""}</td>
+      <td><time datetime="${p.at}">${p.at.slice(0, 16).replace("T", " ")} UTC</time></td>
+    </tr>`;
 }
 
-// Follows /api/plays/stream. Each event's id is the Developer's Play count, so the counter is
-// set from it rather than incremented, and a reconnect (which sends the last id seen) catches
-// up on exactly the Plays missed while disconnected.
+// Follows /api/plays/stream. Each event's id is a cursor ending in the Developer's Play count,
+// so the counter is set from it rather than incremented, and a reconnect (which sends the last
+// cursor seen) catches up on exactly the Plays missed while disconnected.
 const SCRIPT = `
 (() => {
   const count = document.getElementById("count");
   const live = document.getElementById("live");
   const table = document.getElementById("plays");
-  const tbody = table.querySelector("tbody");
-  const when = (at) => at.slice(0, 16).replace("T", " ") + " UTC";
   const setLive = (state, text) => { live.dataset.state = state; live.textContent = text; };
 
-  const stream = new EventSource("/api/plays/stream?since=" + count.dataset.count);
+  const stream = new EventSource("/api/plays/stream?since=" + count.dataset.cursor);
   stream.onopen = () => setLive("live", "live");
   stream.onerror = () => setLive("connecting", "reconnecting");
   stream.addEventListener("reset", () => location.reload());
   stream.onmessage = (event) => {
-    const play = JSON.parse(event.data);
-    const row = document.createElement("tr");
-    const cells = [play.project, play.kind, play.lines_written ?? "", play.file_ext ?? ""];
-    for (const text of cells) row.appendChild(document.createElement("td")).textContent = String(text);
-    const time = row.appendChild(document.createElement("td")).appendChild(document.createElement("time"));
-    time.dateTime = play.at;
-    time.textContent = when(play.at);
-    row.className = "new";
-    tbody.prepend(row);
+    const tbody = table.tBodies[0];
+    tbody.insertAdjacentHTML("afterbegin", event.data);
+    tbody.rows[0].className = "new";
     table.hidden = false;
     document.getElementById("empty").hidden = true;
 
-    count.dataset.count = event.lastEventId;
-    count.textContent = event.lastEventId;
+    count.textContent = event.lastEventId.split(".")[1];
     count.classList.remove("bump");
     void count.offsetWidth;
     count.classList.add("bump");
