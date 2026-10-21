@@ -68,7 +68,10 @@ export function createApp({ ledger, developers, dashboardDeveloperId, clock = ()
 
   let agGrid: Promise<string> | undefined;
   app.get("/vendor/ag-grid-community.min.js", async (c) => {
-    agGrid ??= readFile(AG_GRID, "utf8");
+    agGrid ??= readFile(AG_GRID, "utf8").catch((err) => {
+      agGrid = undefined;
+      throw err;
+    });
     c.header("cache-control", "public, max-age=86400");
     return c.body(await agGrid, 200, { "content-type": "text/javascript; charset=utf-8" });
   });

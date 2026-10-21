@@ -24,7 +24,7 @@ Point Claude Code at it by adding the capture hook to `~/.claude/settings.json`:
 }
 ```
 
-When the agent writes a new file that imports an npm package, a Play appears on the dashboard. (Edits to existing files are counted from ticket #4.) The dashboard also shows this month's statement: each Project your Agent played, with its import Plays, docs Plays and lines written. The same totals come from `GET /api/statement?period=YYYY-MM` with your PlayCount key as a Bearer token (the period defaults to the current month, UTC).
+When the agent writes a new file that imports an npm package, a Play appears on the dashboard. (Edits to existing files are counted from ticket #4.) The dashboard also shows this month's statement: each Project your Agent played, with its import Plays, docs Plays and lines written. The same totals come from `GET /api/statement?period=YYYY-MM` with your PlayCount key in an `Authorization: Bearer …` header (the period defaults to the current month, UTC).
 
 Only the Play log leaves your machine, never source code ([ADR 0001](docs/adr/0001-play-log-only-no-source-code.md)).
 

@@ -34,9 +34,11 @@ export function dashboardPage(name: string, plays: Play[], statement: Statement)
     </table>`
       : html`<p>No Plays yet. They appear here as your Agent writes code that imports npm packages.</p>`}
   </main>
-  <script type="application/json" id="statement">${raw(JSON.stringify(statement).replace(/</g, "\\u003c"))}</script>
+  ${statement.projects.length
+    ? html`<script type="application/json" id="statement">${raw(JSON.stringify(statement).replace(/</g, "\\u003c"))}</script>
   <script src="/vendor/ag-grid-community.min.js"></script>
-  <script>${raw(GRID)}</script>
+  <script>${raw(GRID)}</script>`
+    : ""}
 </body>
 </html>`;
 }
@@ -44,22 +46,19 @@ export function dashboardPage(name: string, plays: Play[], statement: Statement)
 // Renders the statement with AG Grid; every column sorts on a header click.
 const GRID = `
   const statement = JSON.parse(document.getElementById("statement").textContent);
-  const el = document.getElementById("statement-grid");
-  if (el) {
-    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-    agGrid.createGrid(el, {
-      theme: agGrid.themeQuartz.withPart(dark ? agGrid.colorSchemeDark : agGrid.colorSchemeLight),
-      domLayout: "autoHeight",
-      rowData: statement.projects,
-      defaultColDef: { sortable: true, flex: 1 },
-      columnDefs: [
-        { field: "project", headerName: "Project", flex: 2 },
-        { field: "import_plays", headerName: "Import Plays" },
-        { field: "docs_plays", headerName: "Docs Plays" },
-        { field: "lines_written", headerName: "Lines written" },
-      ],
-    });
-  }
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  agGrid.createGrid(document.getElementById("statement-grid"), {
+    theme: agGrid.themeQuartz.withPart(dark ? agGrid.colorSchemeDark : agGrid.colorSchemeLight),
+    domLayout: "autoHeight",
+    rowData: statement.projects,
+    defaultColDef: { sortable: true, flex: 1 },
+    columnDefs: [
+      { field: "project", headerName: "Project", flex: 2 },
+      { field: "import_plays", headerName: "Import Plays" },
+      { field: "docs_plays", headerName: "Docs Plays" },
+      { field: "lines_written", headerName: "Lines written" },
+    ],
+  });
 `;
 
 const STYLE = `
