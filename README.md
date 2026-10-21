@@ -36,6 +36,8 @@ Config comes only from the environment, never the repo. Render generates `PLAYCO
 
 To capture Plays on the hosted service, set the hook's `PLAYCOUNT_URL` to the service's `onrender.com` URL and `PLAYCOUNT_KEY` to the generated `PLAYCOUNT_DEMO_KEY`.
 
+It runs on Render's free plan, which sleeps after about 15 idle minutes. Open `/health` and wait for it to answer before a demo, or the first Plays are dropped while it wakes. Plays are kept in memory for now, so a sleep or a deploy clears the dashboard.
+
 ## Develop
 
 ```sh
