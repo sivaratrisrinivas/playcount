@@ -1,0 +1,27 @@
+# Render Blueprint: deploys PlayCount from main once CI passes.
+# Secrets are declared with `sync: false` so Render asks for them in its dashboard;
+# their values never live in this repo. Render takes the Node version from .nvmrc.
+services:
+  - type: web
+    name: playcount
+    runtime: node
+    plan: free
+    branch: main
+    autoDeployTrigger: checksPass
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      # The seeded Developer's PlayCount key. Render generates it; copy it into the hook config.
+      - key: PLAYCOUNT_DEMO_KEY
+        generateValue: true
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
