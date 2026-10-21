@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { parsePlay, type Play } from "../play.ts";
+import { MAX_PLAYS_PER_BATCH as MAX_BATCH, parsePlay, type Play } from "../play.ts";
 import type { Developers } from "./developers.ts";
 import type { Ledger } from "./ledger.ts";
 import { dashboardPage } from "./dashboard.ts";
@@ -16,8 +16,6 @@ export type AppDeps = {
   // Decides the current period; tests pass a fixed one.
   clock?: () => Date;
 };
-
-const MAX_BATCH = 1000;
 
 // AG Grid is served from the installed package so the dashboard works without a CDN.
 // The browser bundle isn't in the package's exports, so it is found next to the main entry.

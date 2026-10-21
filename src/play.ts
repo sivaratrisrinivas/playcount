@@ -12,10 +12,10 @@ export type Play = {
 const FIELDS = new Set(["kind", "project", "lines_written", "file_ext", "session_id", "at"]);
 const NPM_NAME = /^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i;
 
-// True when the name is one npm could publish, so it is safe to send as a Play's project.
-export function isProjectName(name: string): boolean {
-  return name.length <= 214 && NPM_NAME.test(name);
-}
+// The most Plays PlayCount accepts in one batch.
+export const MAX_PLAYS_PER_BATCH = 1000;
+
+export const isProjectName = (name: string) => name.length <= 214 && NPM_NAME.test(name);
 
 // Accepts exactly the Play-log fields and nothing else, so no source text can slip in.
 export function parsePlay(value: unknown): Play | null {
