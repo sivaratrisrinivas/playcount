@@ -46,19 +46,65 @@ function boundNames(clause: string): string[] {
   return names;
 }
 
-// Project -> local names its imports bind (in source order), plus the code with
-// every import and re-export statement blanked out, ready for counting uses.
-function parse(source: string): { imports: Map<string, Set<string>>; body: string } {
-  const imports = new Map<string, Set<string>>();
-  const body = withoutComments(source).replace(STATEMENT, (match, clause?: string, from?: string, bare?: string, reexport?: string) => {
-    const project = projectOf((from ?? bare ?? reexport)!);
-    if (project) {
-      const names = imports.get(project) ?? new Set<string>();
-      if (clause) boundNames(clause.trim()).forEach((n) => names.add(n));
-      imports.set(project, names);
+const NAME = "[A-Za-z_$][\\w$]*";
+
+// A require() or import() whose result is bound to names, e.g. `const x = require("p")`,
+// `const { a } = await import("p")`, or TypeScript's `import x = require("p")`.
+const BOUND_CALL = new RegExp(
+  `\\b(?:const|let|var|import)\\s+(${NAME}|\\{[^{}]*\\})\\s*=\\s*(?:await\\s+)?(?:require|import)\\s*\\(\\s*(["'\`])([^"'\`]+)\\2\\s*\\)`,
+  "g",
+);
+// Any other require() or import() of a package, used inline where it stands.
+const INLINE_CALL = /(?<![\w$.])(?:require|import)\s*\(\s*(["'`])([^"'`]+)\1\s*\)/g;
+
+// The local names a destructuring pattern binds: `{ a, b: c, d = 1, ...e }` -> a, c, d, e.
+function destructuredNames(pattern: string): string[] {
+  return pattern
+    .slice(1, -1)
+    .split(",")
+    .map((part) => part.split(":").pop()!.split("=")[0]!.replace("...", "").trim())
+    .filter((name) => new RegExp(`^${NAME}$`).test(name));
+}
+
+type Imported = {
+  names: Set<string>; // local names its imports bind
+  declaredOn: Set<number>; // lines where an import statement or binding starts
+  calledOn: Set<number>; // lines with an inline require() or import(), each a use
+};
+
+const lineOf = (text: string, index: number) => text.slice(0, index).split("\n").length - 1;
+
+// Project -> what the source imports from it, plus the code with every import,
+// re-export and bound require blanked out, ready for counting uses line by line.
+function parse(source: string): { imports: Map<string, Imported>; body: string } {
+  const imports = new Map<string, Imported>();
+  const importOf = (spec: string) => {
+    const project = projectOf(spec);
+    if (!project) return undefined;
+    const entry = imports.get(project) ?? { names: new Set(), declaredOn: new Set(), calledOn: new Set() };
+    imports.set(project, entry);
+    return entry;
+  };
+  const blank = (match: string) => match.replace(/[^\n]/g, "");
+
+  let body = withoutComments(source);
+  body = body.replace(STATEMENT, (match, clause: string | undefined, from?: string, bare?: string, reexport?: string, offset?: number) => {
+    const entry = importOf((from ?? bare ?? reexport)!);
+    if (entry) {
+      if (clause) boundNames(clause.trim()).forEach((n) => entry.names.add(n));
+      entry.declaredOn.add(lineOf(body, offset!));
     }
-    return match.replace(/[^\n]/g, "");
+    return blank(match);
   });
+  body = body.replace(BOUND_CALL, (match, binding: string, _quote: string, spec: string, offset: number) => {
+    const entry = importOf(spec);
+    if (entry) {
+      (binding.startsWith("{") ? destructuredNames(binding) : [binding]).forEach((n) => entry.names.add(n));
+      entry.declaredOn.add(lineOf(body, offset));
+    }
+    return blank(match);
+  });
+  for (const call of body.matchAll(INLINE_CALL)) importOf(call[2]!)?.calledOn.add(lineOf(body, call.index));
   return { imports, body };
 }
 
@@ -71,18 +117,70 @@ function extensionOf(path: unknown): string | undefined {
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : undefined;
 }
 
-export function playsFromToolEvent(event: ToolEvent, at: string): Play[] {
-  if (event.tool_name !== "Write") return [];
-  const content = event.tool_input.content;
-  if (typeof content !== "string") return [];
-
-  const { imports, body } = parse(content);
-  const lines = body.split("\n");
-  const file_ext = extensionOf(event.tool_input.file_path);
-
-  return [...imports].map(([project, names]) => {
-    const uses = names.size ? new RegExp(`(?<![\\w$])(${[...names].map(escapeDollar).join("|")})(?![\\w$])`) : null;
-    const lines_written = uses ? lines.filter((l) => uses.test(l)).length : 0;
-    return { kind: "import", project, lines_written, ...(file_ext && { file_ext }), session_id: event.session_id, at };
+// Lines of the new text that are not in the old text (each old line cancels one copy).
+function addedLines(oldText: string, newText: string): Set<number> {
+  const old = new Map<string, number>();
+  for (const line of oldText.split("\n")) old.set(line, (old.get(line) ?? 0) + 1);
+  const added = new Set<number>();
+  newText.split("\n").forEach((line, i) => {
+    const left = old.get(line) ?? 0;
+    if (left > 0) old.set(line, left - 1);
+    else added.add(i);
   });
+  return added;
+}
+
+// Project -> lines written against it, for the lines of `text` that `isNew` accepts.
+// `known` adds the names the rest of the file already imports (for Edit and MultiEdit).
+// A Project counts when a new line uses it or a new line imports it.
+function linesWritten(text: string, isNew: (line: number) => boolean, known?: Map<string, Imported>): Map<string, number> {
+  const { imports, body } = parse(text);
+  const lines = body.split("\n");
+  const counts = new Map<string, number>();
+  for (const project of new Set([...(known?.keys() ?? []), ...imports.keys()])) {
+    const here = imports.get(project);
+    const names = [...(known?.get(project)?.names ?? []), ...(here?.names ?? [])];
+    const uses = names.length ? new RegExp(`(?<![\\w$])(${names.map(escapeDollar).join("|")})(?![\\w$])`) : null;
+    const count = lines.filter((l, i) => isNew(i) && (here?.calledOn.has(i) || uses?.test(l))).length;
+    if (count > 0 || [...(here?.declaredOn ?? [])].some(isNew)) counts.set(project, count);
+  }
+  return counts;
+}
+
+type Edit = { old_string: string; new_string: string };
+
+function editsOf(event: ToolEvent): Edit[] {
+  const { tool_input: input } = event;
+  const raw = event.tool_name === "Edit" ? [input] : event.tool_name === "MultiEdit" ? input.edits : [];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((e): e is Edit => typeof e?.old_string === "string" && typeof e?.new_string === "string");
+}
+
+// `fileContents` is the edited file as it is on disk after the tool ran; the hook
+// reads it locally for Edit and MultiEdit so imports at the top of the file resolve.
+export function playsFromToolEvent(event: ToolEvent, at: string, fileContents?: string): Play[] {
+  const counts = new Map<string, number>();
+  if (event.tool_name === "Write") {
+    const content = event.tool_input.content;
+    if (typeof content !== "string") return [];
+    for (const [project, n] of linesWritten(content, () => true)) counts.set(project, n);
+  } else {
+    const known = fileContents === undefined ? undefined : parse(fileContents).imports;
+    for (const { old_string, new_string } of editsOf(event)) {
+      const added = addedLines(old_string, new_string);
+      for (const [project, n] of linesWritten(new_string, (i) => added.has(i), known)) {
+        counts.set(project, (counts.get(project) ?? 0) + n);
+      }
+    }
+  }
+
+  const file_ext = extensionOf(event.tool_input.file_path);
+  return [...counts].map(([project, lines_written]) => ({
+    kind: "import",
+    project,
+    lines_written,
+    ...(file_ext && { file_ext }),
+    session_id: event.session_id,
+    at,
+  }));
 }

@@ -24,7 +24,7 @@ Point Claude Code at it by adding the capture hook to `~/.claude/settings.json`:
 }
 ```
 
-When the agent writes a new file that imports an npm package, a Play appears on the dashboard. (Edits to existing files are counted from ticket #4.) Only the Play log leaves your machine, never source code ([ADR 0001](docs/adr/0001-play-log-only-no-source-code.md)).
+When the agent writes or edits code that imports an npm package (`import`, `require` or `import()`), a Play appears on the dashboard. If PlayCount is unreachable, Plays wait in `~/.playcount/queue.jsonl` (or `$PLAYCOUNT_QUEUE_DIR`) and are sent on a later run. Only the Play log leaves your machine, never source code ([ADR 0001](docs/adr/0001-play-log-only-no-source-code.md)).
 
 ## Develop
 
