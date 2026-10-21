@@ -24,7 +24,7 @@ beforeEach(async () => {
   server = await startServer({
     ledger,
     developers: inMemoryDevelopers([ada, bob]),
-    dashboardDeveloperId: ada.id,
+    demoDeveloperId: ada.id,
     clock: () => new Date("2026-10-21T18:00:00.000Z"),
     port: 0,
   });

@@ -2,21 +2,76 @@ import { html, raw } from "hono/html";
 import type { Play } from "../play.ts";
 import type { Statement } from "./statement.ts";
 
-// The Developer's dashboard: the current period's statement, then their Plays, newest first.
-// It renders the Plays recorded so far, then follows the live Play stream so the counter and
-// list update while the Agent works. `cursor` marks where the page's Plays end in that stream.
-export function dashboardPage(name: string, plays: Play[], statement: Statement, cursor: string) {
-  return html`<!doctype html>
-<html lang="en">
-<head>
+// Whether this service offers GitHub sign-in ("off" when it has no GitHub OAuth app configured).
+export type SignIn = "available" | "off";
+
+export type DashboardView = {
+  name: string;
+  plays: Play[];
+  statement: Statement;
+  // Marks where the page's Plays end in the live Play stream.
+  cursor: string;
+  signIn: SignIn;
+  // Present only for the signed-in Developer's own dashboard.
+  setup?: { key: string; installCommand: string };
+};
+
+const head = () => html`<head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PlayCount</title>
   <style>${raw(STYLE)}</style>
-</head>
+</head>`;
+
+function header(signedIn: boolean, signIn: SignIn) {
+  const account = signedIn
+    ? html`<form method="post" action="/auth/signout"><button type="submit" class="link">Sign out</button></form>`
+    : signIn === "available"
+      ? html`<a class="button" href="/auth/github">Sign in with GitHub</a>`
+      : "";
+  return html`<header><h1>PlayCount</h1>${account}</header>`;
+}
+
+// Shown when there is no Developer to show: no one is signed in and no demo Developer is seeded.
+export function landingPage(signIn: SignIn) {
+  return html`<!doctype html>
+<html lang="en">
+${head()}
 <body>
   <main>
-    <h1>PlayCount</h1>
+    ${header(false, signIn)}
+    <p>PlayCount splits your monthly budget among the open-source projects your coding agent actually uses.</p>
+    ${signIn === "off" ? html`<p>Sign-in is not configured on this service yet.</p>` : ""}
+  </main>
+</body>
+</html>`;
+}
+
+// The signed-in Developer's one-time setup: the install command, their PlayCount key, and key rotation.
+function setupSection({ key, installCommand }: { key: string; installCommand: string }) {
+  return html`<section id="setup">
+      <h2>Set up capture</h2>
+      <p>Run this once in a terminal. It installs the capture hook and docs tool into your user-level Claude Code settings, so Plays are counted in every repo you open. Needs Node 22.18 or later.</p>
+      <div class="command"><pre><code id="install">${installCommand}</code></pre><button type="button" id="copy">Copy</button></div>
+      <p>Your PlayCount key: <code id="key">${key}</code></p>
+      <form method="post" action="/key/rotate" onsubmit="return confirm('Rotate your PlayCount key? The old key stops working at once.')">
+        <button type="submit">Rotate key</button>
+        <span class="hint">The old key stops working at once. Run the install command again to use the new one.</span>
+      </form>
+    </section>`;
+}
+
+// The Developer's dashboard: the current period's statement, then their Plays, newest first.
+// It renders the Plays recorded so far, then follows the live Play stream so the counter and
+// list update while the Agent works. A visitor who has not signed in sees the demo Developer's.
+export function dashboardPage({ name, plays, statement, cursor, signIn, setup }: DashboardView) {
+  return html`<!doctype html>
+<html lang="en">
+${head()}
+<body>
+  <main>
+    ${header(Boolean(setup), signIn)}
+    ${setup ? setupSection(setup) : ""}
     <h2 id="statement-title">Statement for ${statement.period}</h2>
     <p id="statement-empty" ${statement.projects.length ? "hidden" : ""}>No Plays this period yet.</p>
     <div id="statement-grid" ${statement.projects.length ? "" : "hidden"}></div>
@@ -35,6 +90,7 @@ export function dashboardPage(name: string, plays: Play[], statement: Statement,
   <script src="/vendor/ag-grid-community.min.js"></script>
   <script>${raw(GRID)}</script>
   <script>${raw(SCRIPT)}</script>
+  ${setup ? html`<script>${raw(COPY)}</script>` : ""}
 </body>
 </html>`;
 }
@@ -75,6 +131,13 @@ const SCRIPT = `
     count.classList.add("bump");
   };
 })();
+`;
+
+const COPY = `
+  document.getElementById("copy").addEventListener("click", async (event) => {
+    await navigator.clipboard.writeText(document.getElementById("install").textContent);
+    event.target.textContent = "Copied";
+  });
 `;
 
 // Renders the statement with AG Grid; every column sorts on a header click. showStatement
@@ -119,6 +182,14 @@ const STYLE = `
   @keyframes bump { 0% { transform: scale(1.4); color: var(--accent); } 100% { transform: scale(1); } }
   tr.new td { animation: flash 1.5s ease-out; }
   @keyframes flash { from { background: var(--flash); } to { background: transparent; } }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  header form { margin: 0; }
+  a.button, button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; text-decoration: none; }
+  button.link { border: 0; padding: 0; color: var(--muted); text-decoration: underline; }
+  .command { display: flex; gap: 8px; align-items: flex-start; }
+  .command pre { flex: 1; margin: 0; padding: 10px; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+  code { overflow-wrap: anywhere; }
+  .hint { margin-left: 8px; font-size: 13px; color: var(--muted); }
   .live { margin-left: 8px; font-size: 13px; color: var(--muted); }
   .live::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--muted); vertical-align: 1px; }
   .live[data-state="live"]::before { background: var(--accent); }
