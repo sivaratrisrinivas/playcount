@@ -11,6 +11,7 @@ const packuments: Record<string, unknown> = {
   zod: { name: "zod", readme: "# Zod\n\nTypeScript-first schema validation." },
   "@hookform/resolvers": { name: "@hookform/resolvers", readme: "# Resolvers" },
   "no-readme": { name: "no-readme" },
+  placeholder: { name: "placeholder", readme: "ERROR: No README data found!" },
   huge: { name: "huge", readme: "x".repeat(50_000) },
 };
 
@@ -94,6 +95,11 @@ it("cuts a very long README short and says so", async () => {
 it("says so when a package has no README", async () => {
   const res = await readDocs("no-readme");
   expect(res.result.isError).toBeUndefined();
+  expect(res.result.content[0].text).toMatch(/no README/);
+});
+
+it("treats npm's no-README placeholder as no README", async () => {
+  const res = await readDocs("placeholder");
   expect(res.result.content[0].text).toMatch(/no README/);
 });
 

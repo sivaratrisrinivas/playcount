@@ -17,7 +17,7 @@ export const DOCS_TOOL = "mcp__playcount__read_docs";
 const builtins = new Set(builtinModules.flatMap((m) => [m, `node:${m}`]));
 
 // The npm package an import specifier credits, or null when it is not a Project.
-export function projectOf(spec: string): string | null {
+function projectOf(spec: string): string | null {
   if (spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("node:")) return null;
   const parts = spec.split("/");
   if (builtins.has(spec) || builtins.has(parts[0]!)) return null;
@@ -80,12 +80,16 @@ function failed(response: unknown): boolean {
   return typeof response === "object" && response !== null && (response as { isError?: unknown }).isError === true;
 }
 
+// The Project a read_docs `package` argument names, or null when it names none.
+// Shared by the docs tool and the hook so both credit the same Project.
+export function docsProjectOf(pkg: unknown): string | null {
+  const project = typeof pkg === "string" ? projectOf(pkg.trim()) : null;
+  return project && isProjectName(project) ? project : null;
+}
+
 function docsPlays(event: ToolEvent, at: string): Play[] {
-  const pkg = event.tool_input.package;
-  if (typeof pkg !== "string" || failed(event.tool_response)) return [];
-  const project = projectOf(pkg.trim());
-  if (!project || !isProjectName(project)) return [];
-  return [{ kind: "docs", project, session_id: event.session_id, at }];
+  const project = failed(event.tool_response) ? null : docsProjectOf(event.tool_input.package);
+  return project ? [{ kind: "docs", project, session_id: event.session_id, at }] : [];
 }
 
 export function playsFromToolEvent(event: ToolEvent, at: string): Play[] {
