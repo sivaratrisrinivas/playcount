@@ -12,8 +12,6 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-// Must match the server's capture files: the hook, the docs tool and what they import.
-const FILES = ["src/play.ts", "src/capture/hook.ts", "src/capture/plays.ts", "src/capture/queue.ts", "src/capture/docs-server.ts"];
 const DOCS_TOOL = "mcp__playcount__read_docs";
 const MATCHER = `Write|Edit|MultiEdit|${DOCS_TOOL}`;
 // Recognises a PlayCount hook command from this installer or the README's manual setup.
@@ -56,8 +54,12 @@ async function readSettings(): Promise<Settings> {
 
 function withPlayCount(settings: Settings, hookCommand: string): Settings {
   const allow = settings.permissions?.allow ?? [];
+  const postToolUse = settings.hooks?.PostToolUse ?? [];
+  if (!Array.isArray(allow) || !Array.isArray(postToolUse)) {
+    fail(`${settingsPath} has permissions.allow or hooks.PostToolUse that is not a list. Fix it and run the command again.`);
+  }
   // Earlier PlayCount hooks are removed, so a rerun or a manual setup leaves exactly one.
-  const others = (settings.hooks?.PostToolUse ?? [])
+  const others = postToolUse
     .map((entry) => ({ ...entry, hooks: entry.hooks?.filter((h) => !PLAYCOUNT_HOOK.test(h.command ?? "")) }))
     .filter((entry) => entry.hooks?.length);
   return {
@@ -71,26 +73,34 @@ function withPlayCount(settings: Settings, hookCommand: string): Settings {
   };
 }
 
-async function download(file: string) {
+async function fetchCapture(file: string) {
   const res = await fetch(`${service}/capture/${file}`, { signal: AbortSignal.timeout(30_000) }).catch((err: Error) =>
     fail(`could not reach ${service}: ${err.message}`),
   );
   if (!res.ok) fail(`${service} answered ${res.status} for ${file}`);
-  const path = join(captureDir, file);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, await res.text());
+  return res.text();
 }
 
-const settings = await readSettings();
+async function download(file: string) {
+  const path = join(captureDir, file);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, await fetchCapture(file));
+}
 
-for (const file of FILES) await download(file);
+const settings = withPlayCount(await readSettings(), `node "${join(captureDir, "src", "capture", "hook.ts")}"`);
+
+// The service lists its capture files, so this installer never drifts from the hook's imports.
+const files: unknown = JSON.parse(await fetchCapture("files.json"));
+if (!Array.isArray(files) || !files.every((f) => typeof f === "string" && /^src\/[\w/-]+\.ts$/.test(f))) {
+  fail(`${service} sent an unexpected list of capture files`);
+}
+for (const file of files) await download(file);
 await writeFile(join(captureDir, "package.json"), JSON.stringify({ type: "module", private: true }, null, 2) + "\n");
 
-const hook = join(captureDir, "src", "capture", "hook.ts");
 const docsServer = join(captureDir, "src", "capture", "docs-server.ts");
 await mkdir(configDir, { recursive: true });
 const next = `${settingsPath}.playcount-${process.pid}`;
-await writeFile(next, JSON.stringify(withPlayCount(settings, `node "${hook}"`), null, 2) + "\n");
+await writeFile(next, JSON.stringify(settings, null, 2) + "\n");
 await rename(next, settingsPath);
 console.log(`Added the PlayCount hook to ${settingsPath}`);
 

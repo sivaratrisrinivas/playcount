@@ -216,6 +216,7 @@ export function createApp({ ledger, developers, demoDeveloperId, github, publicU
   const serveSource = async (c: Context, file: string) =>
     c.body(await readFile(join(ROOT, file), "utf8"), 200, { "content-type": "text/plain; charset=utf-8" });
   app.get("/install.ts", (c) => serveSource(c, INSTALLER));
+  app.get("/capture/files.json", (c) => c.json(CAPTURE_FILES));
   app.get("/capture/*", (c) => {
     const file = c.req.path.slice("/capture/".length);
     return CAPTURE_FILES.includes(file) ? serveSource(c, file) : c.notFound();

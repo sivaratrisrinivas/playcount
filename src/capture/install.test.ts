@@ -128,6 +128,15 @@ it("leaves settings it cannot read untouched and says so", async () => {
   expect(readFileSync(settingsPath, "utf8")).toBe("{ not json");
 });
 
+it("leaves settings whose hooks are not a list untouched", async () => {
+  mkdirSync(join(home, ".claude"));
+  const mine = JSON.stringify({ hooks: { PostToolUse: { matcher: "Bash" } } });
+  writeFileSync(settingsPath, mine);
+  const { code } = await install();
+  expect(code).not.toBe(0);
+  expect(readFileSync(settingsPath, "utf8")).toBe(mine);
+});
+
 it("refuses a key that is not a PlayCount key", async () => {
   const { code, output } = await install("not-a-key");
   expect(code).not.toBe(0);
