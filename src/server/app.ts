@@ -3,7 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { parsePlay, type Play } from "../play.ts";
+import { MAX_PLAYS_PER_BATCH as MAX_BATCH, parsePlay, type Play } from "../play.ts";
 import type { Developers } from "./developers.ts";
 import type { Ledger } from "./ledger.ts";
 import { dashboardPage, playRow } from "./dashboard.ts";
@@ -18,7 +18,6 @@ export type AppDeps = {
   clock?: () => Date;
 };
 
-const MAX_BATCH = 1000;
 // Keeps idle live streams open through proxies that drop silent connections.
 const KEEPALIVE_MS = 15_000;
 
