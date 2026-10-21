@@ -149,6 +149,11 @@ describe("playsFromToolEvent: Write", () => {
       plays: [],
     },
     {
+      name: "a computed specifier names no Project and leaks no source text",
+      event: write("a.js", 'const m = await import(`${base}/x`);\nrequire(`pkg-${name}`);\nrequire("Not A Package");\n'),
+      plays: [],
+    },
+    {
       name: "a method that happens to be called require is not an import",
       event: write("a.js", 'loader.require("plugin");\n'),
       plays: [],
@@ -185,6 +190,11 @@ describe("playsFromToolEvent: Edit and MultiEdit", () => {
       name: "lines kept unchanged from old_string are not counted",
       event: edit("src/a.ts", "export const s = z.string();\nexport const t = z.number();", "export const s = z.string();\nexport const t = z.number().int();"),
       plays: [{ project: "zod", lines_written: 1, file_ext: "ts" }],
+    },
+    {
+      name: "re-indented lines are not new lines",
+      event: edit("src/a.ts", "export const s = z.string();", "if (x) {\n  export const s = z.string();\n}"),
+      plays: [],
     },
     {
       name: "an import the file has but the new lines do not use is not a Play",

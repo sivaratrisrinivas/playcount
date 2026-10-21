@@ -1,7 +1,7 @@
 // Turns one Claude Code tool event into Plays. Pure: no I/O, so it can be tested
 // table-driven (seam 2) and runs on the Developer's machine inside the hook.
 import { builtinModules } from "node:module";
-import type { Play } from "../play.ts";
+import { isProjectName, type Play } from "../play.ts";
 
 export type ToolEvent = {
   tool_name: string;
@@ -16,7 +16,8 @@ function projectOf(spec: string): string | null {
   if (spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("node:")) return null;
   const parts = spec.split("/");
   if (builtins.has(spec) || builtins.has(parts[0]!)) return null;
-  return spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
+  const project = spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
+  return isProjectName(project) ? project : null; // also drops computed `${...}` specifiers
 }
 
 // Comments become blank space of the same line count, so commented-out code is
@@ -118,11 +119,12 @@ function extensionOf(path: unknown): string | undefined {
 }
 
 // Lines of the new text that are not in the old text (each old line cancels one copy).
+// Indentation is ignored, so re-indented lines are not new.
 function addedLines(oldText: string, newText: string): Set<number> {
   const old = new Map<string, number>();
-  for (const line of oldText.split("\n")) old.set(line, (old.get(line) ?? 0) + 1);
+  for (const line of oldText.split("\n").map((l) => l.trim())) old.set(line, (old.get(line) ?? 0) + 1);
   const added = new Set<number>();
-  newText.split("\n").forEach((line, i) => {
+  newText.split("\n").map((l) => l.trim()).forEach((line, i) => {
     const left = old.get(line) ?? 0;
     if (left > 0) old.set(line, left - 1);
     else added.add(i);
@@ -149,9 +151,12 @@ function linesWritten(text: string, isNew: (line: number) => boolean, known?: Ma
 
 type Edit = { old_string: string; new_string: string };
 
+// Edits need the whole file to resolve imports at its top; the hook reads it locally.
+export const needsFileContents = (event: ToolEvent) => event.tool_name === "Edit" || event.tool_name === "MultiEdit";
+
 function editsOf(event: ToolEvent): Edit[] {
   const { tool_input: input } = event;
-  const raw = event.tool_name === "Edit" ? [input] : event.tool_name === "MultiEdit" ? input.edits : [];
+  const raw = event.tool_name === "Edit" ? [input] : input.edits;
   if (!Array.isArray(raw)) return [];
   return raw.filter((e): e is Edit => typeof e?.old_string === "string" && typeof e?.new_string === "string");
 }
@@ -164,7 +169,7 @@ export function playsFromToolEvent(event: ToolEvent, at: string, fileContents?: 
     const content = event.tool_input.content;
     if (typeof content !== "string") return [];
     for (const [project, n] of linesWritten(content, () => true)) counts.set(project, n);
-  } else {
+  } else if (needsFileContents(event)) {
     const known = fileContents === undefined ? undefined : parse(fileContents).imports;
     for (const { old_string, new_string } of editsOf(event)) {
       const added = addedLines(old_string, new_string);

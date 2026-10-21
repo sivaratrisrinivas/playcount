@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { parsePlay, type Play } from "../play.ts";
+import { MAX_PLAYS_PER_BATCH as MAX_BATCH, parsePlay, type Play } from "../play.ts";
 import type { Developers } from "./developers.ts";
 import type { Ledger } from "./ledger.ts";
 import { dashboardPage } from "./dashboard.ts";
@@ -10,8 +10,6 @@ export type AppDeps = {
   // The seeded Developer the dashboard shows until GitHub sign-in exists (#8).
   dashboardDeveloperId: string;
 };
-
-const MAX_BATCH = 1000;
 
 export function createApp({ ledger, developers, dashboardDeveloperId }: AppDeps) {
   const app = new Hono();

@@ -6,15 +6,14 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Play } from "../play.ts";
-import { playsFromToolEvent, type ToolEvent } from "./plays.ts";
+import { MAX_PLAYS_PER_BATCH, parsePlay, type Play } from "../play.ts";
+import { needsFileContents, playsFromToolEvent, type ToolEvent } from "./plays.ts";
 import { enqueue, takeQueued } from "./queue.ts";
 
 const url = (process.env.PLAYCOUNT_URL ?? "http://localhost:3000").replace(/\/$/, "");
 const key = process.env.PLAYCOUNT_KEY;
 const queueDir = process.env.PLAYCOUNT_QUEUE_DIR || join(homedir(), ".playcount");
-const MAX_BATCH = 1000; // the server's limit per request
-const DEADLINE_MS = 2000;
+const DEADLINE_MS = 1000;
 
 async function readStdin(): Promise<string> {
   let text = "";
@@ -29,7 +28,7 @@ async function newPlays(): Promise<Play[]> {
     const event = JSON.parse(await readStdin()) as ToolEvent;
     const path = event.tool_input?.file_path;
     const fileContents =
-      event.tool_name !== "Write" && typeof path === "string" ? await readFile(path, "utf8").catch(() => undefined) : undefined;
+      needsFileContents(event) && typeof path === "string" ? await readFile(path, "utf8").catch(() => undefined) : undefined;
     return playsFromToolEvent(event, new Date().toISOString(), fileContents);
   } catch {
     return [];
@@ -37,17 +36,17 @@ async function newPlays(): Promise<Play[]> {
 }
 
 // Sends Plays in batches and returns the ones PlayCount did not accept and may later.
+// Every Play here passed parsePlay, so a 400 would only repeat; it is not retried.
 async function send(plays: Play[]): Promise<Play[]> {
   const signal = AbortSignal.timeout(DEADLINE_MS);
-  for (let i = 0; i < plays.length; i += MAX_BATCH) {
+  for (let i = 0; i < plays.length; i += MAX_PLAYS_PER_BATCH) {
     try {
       const res = await fetch(`${url}/api/plays`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-        body: JSON.stringify({ plays: plays.slice(i, i + MAX_BATCH) }),
+        body: JSON.stringify({ plays: plays.slice(i, i + MAX_PLAYS_PER_BATCH) }),
         signal,
       });
-      // 400 means the batch can never be accepted, so retrying it would only pile up.
       if (!res.ok && res.status !== 400) return plays.slice(i);
     } catch {
       return plays.slice(i);
@@ -60,8 +59,9 @@ try {
   if (key) {
     const fresh = await newPlays();
     const queued = await takeQueued(queueDir);
-    const plays = [...queued, ...fresh];
+    const plays = [...queued.plays, ...fresh.filter((p) => parsePlay(p))];
     if (plays.length) await enqueue(queueDir, await send(plays));
+    await queued.release();
   }
 } catch {
   // Swallowed on purpose: capture must never fail the Agent's tool call.
