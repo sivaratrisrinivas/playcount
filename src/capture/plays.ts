@@ -19,38 +19,50 @@ function projectOf(spec: string): string | null {
   return spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
 }
 
-// Project -> local names its imports bind, in order of first appearance.
-function importsIn(text: string): Map<string, Set<string>> {
-  const found = new Map<string, Set<string>>();
-  const add = (spec: string, names: string[] = []) => {
-    const project = projectOf(spec);
-    if (!project) return;
-    const set = found.get(project) ?? new Set<string>();
-    names.filter(Boolean).forEach((n) => set.add(n));
-    found.set(project, set);
-  };
-
-  for (const m of text.matchAll(/import\s+(?:type\s+)?([^"';]*?)\s+from\s+["']([^"']+)["']/g)) {
-    const clause = m[1]!.trim();
-    const names: string[] = [];
-    const def = clause.match(/^([A-Za-z_$][\w$]*)/);
-    if (def) names.push(def[1]!);
-    const ns = clause.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/);
-    if (ns) names.push(ns[1]!);
-    const named = clause.match(/\{([^}]*)\}/);
-    if (named) {
-      for (const part of named[1]!.split(",")) {
-        const local = part.trim().replace(/^type\s+/, "").split(/\s+as\s+/).pop();
-        if (local) names.push(local);
-      }
-    }
-    add(m[2]!, names);
-  }
-  for (const m of text.matchAll(/import\s+["']([^"']+)["']/g)) add(m[1]!);
-  return found;
+// Comments become blank space of the same line count, so commented-out code is
+// ignored. Strings are kept so a URL's "//" is not mistaken for a comment.
+function withoutComments(text: string): string {
+  return text.replace(
+    /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+    (match, str: string | undefined) => str ?? match.replace(/[^\n]/g, ""),
+  );
 }
 
-const escape = (s: string) => s.replace(/[$]/g, "\\$");
+const STATEMENT =
+  /\bimport\s+(?:type\s+)?([^"';]*?)\s+from\s+["']([^"']+)["']|\bimport\s+["']([^"']+)["']|\bexport\s+(?:type\s+)?(?:\*(?:\s+as\s+[\w$]+)?|\{[^}]*\})\s*from\s+["']([^"']+)["']/g;
+
+// The local names an import clause binds: default, namespace and named.
+function boundNames(clause: string): string[] {
+  const names: string[] = [];
+  const defaultName = clause.match(/^([A-Za-z_$][\w$]*)/);
+  if (defaultName) names.push(defaultName[1]!);
+  const namespaceName = clause.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/);
+  if (namespaceName) names.push(namespaceName[1]!);
+  const named = clause.match(/\{([^}]*)\}/);
+  for (const part of named?.[1]!.split(",") ?? []) {
+    const local = part.trim().replace(/^type\s+/, "").split(/\s+as\s+/).pop();
+    if (local) names.push(local);
+  }
+  return names;
+}
+
+// Project -> local names its imports bind (in source order), plus the code with
+// every import and re-export statement blanked out, ready for counting uses.
+function parse(source: string): { imports: Map<string, Set<string>>; body: string } {
+  const imports = new Map<string, Set<string>>();
+  const body = withoutComments(source).replace(STATEMENT, (match, clause?: string, from?: string, bare?: string, reexport?: string) => {
+    const project = projectOf((from ?? bare ?? reexport)!);
+    if (project) {
+      const names = imports.get(project) ?? new Set<string>();
+      if (clause) boundNames(clause.trim()).forEach((n) => names.add(n));
+      imports.set(project, names);
+    }
+    return match.replace(/[^\n]/g, "");
+  });
+  return { imports, body };
+}
+
+const escapeDollar = (s: string) => s.replace(/[$]/g, "\\$");
 
 function extensionOf(path: unknown): string | undefined {
   if (typeof path !== "string") return undefined;
@@ -64,11 +76,12 @@ export function playsFromToolEvent(event: ToolEvent, at: string): Play[] {
   const content = event.tool_input.content;
   if (typeof content !== "string") return [];
 
-  const lines = content.split("\n").filter((l) => !/^\s*import\b/.test(l));
+  const { imports, body } = parse(content);
+  const lines = body.split("\n");
   const file_ext = extensionOf(event.tool_input.file_path);
 
-  return [...importsIn(content)].map(([project, names]) => {
-    const uses = names.size ? new RegExp(`(?<![\\w$])(${[...names].map(escape).join("|")})(?![\\w$])`) : null;
+  return [...imports].map(([project, names]) => {
+    const uses = names.size ? new RegExp(`(?<![\\w$])(${[...names].map(escapeDollar).join("|")})(?![\\w$])`) : null;
     const lines_written = uses ? lines.filter((l) => uses.test(l)).length : 0;
     return { kind: "import", project, lines_written, ...(file_ext && { file_ext }), session_id: event.session_id, at };
   });

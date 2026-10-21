@@ -53,6 +53,34 @@ describe("playsFromToolEvent: Write", () => {
       plays: [],
     },
     {
+      name: "a multi-line import counts only the lines after it that use it",
+      event: write("a.ts", 'import {\n  z,\n  ZodError,\n} from "zod";\nconst s = z.string();\n'),
+      plays: [{ project: "zod", lines_written: 1, file_ext: "ts" }],
+    },
+    {
+      name: "commented-out imports and uses are not Plays",
+      event: write("a.ts", '// import x from "foo";\n/* import y from "bar"; */\nimport z from "baz";\n// z is great\nz();\n'),
+      plays: [{ project: "baz", lines_written: 1, file_ext: "ts" }],
+    },
+    {
+      name: "a URL in a string is not mistaken for a comment",
+      event: write("a.ts", 'import ky from "ky";\nky.get("https://example.com"); ky.post("x");\n'),
+      plays: [{ project: "ky", lines_written: 1, file_ext: "ts" }],
+    },
+    {
+      name: "a re-export credits the package",
+      event: write("index.ts", 'export { Button } from "@radix-ui/react-button";\nexport * from "clsx";\n'),
+      plays: [
+        { project: "@radix-ui/react-button", lines_written: 0, file_ext: "ts" },
+        { project: "clsx", lines_written: 0, file_ext: "ts" },
+      ],
+    },
+    {
+      name: "an export declaration before an import does not swallow it",
+      event: write("a.ts", 'export function f() { return 1 }\nimport { g } from "gee";\ng();\n'),
+      plays: [{ project: "gee", lines_written: 1, file_ext: "ts" }],
+    },
+    {
       name: "a file with no imports produces no Plays",
       event: write("README.md", "# Hello\n"),
       plays: [],
