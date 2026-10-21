@@ -25,7 +25,7 @@ export function dashboardPage(name: string, plays: Play[], statement: Statement,
       ${name}'s Plays: <strong id="count" data-cursor="${cursor}">${plays.length}</strong>
       <span id="live" class="live" data-state="connecting">connecting</span>
     </p>
-    <p id="empty" ${plays.length ? "hidden" : ""}>No Plays yet. They appear here as your Agent writes code that imports npm packages.</p>
+    <p id="empty" ${plays.length ? "hidden" : ""}>No Plays yet. They appear here as your Agent writes code that imports npm packages or reads their docs through the PlayCount docs tool.</p>
     <table id="plays" ${plays.length ? "" : "hidden"}>
       <thead><tr><th>Project</th><th>Kind</th><th>Lines written</th><th>File</th><th>When</th></tr></thead>
       <tbody>${plays.map(playRow)}</tbody>

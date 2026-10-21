@@ -260,3 +260,47 @@ describe("package installs are not Plays", () => {
     expect(playsFromToolEvent({ ...e, session_id: "s1" }, at)).toEqual([]);
   });
 });
+
+describe("playsFromToolEvent: docs tool", () => {
+  const readDocs = (pkg: unknown, extra: Partial<ToolEvent> = {}): ToolEvent => ({
+    tool_name: "mcp__playcount__read_docs",
+    tool_input: { package: pkg },
+    session_id: "s1",
+    ...extra,
+  });
+
+  it.each([
+    { name: "a read_docs call is one docs Play for the package", event: readDocs("zod"), projects: ["zod"] },
+    { name: "a scoped package is credited as named", event: readDocs("@hookform/resolvers"), projects: ["@hookform/resolvers"] },
+    { name: "a subpath credits the package", event: readDocs("lodash/debounce"), projects: ["lodash"] },
+    { name: "surrounding whitespace is ignored", event: readDocs("  zod "), projects: ["zod"] },
+    { name: "a missing package name is not a Play", event: readDocs(undefined), projects: [] },
+    { name: "a name npm would not accept is not a Play", event: readDocs("not a package!"), projects: [] },
+    { name: "a Node built-in is not a Project", event: readDocs("node:fs"), projects: [] },
+    { name: "a relative path is not a Project", event: readDocs("./local"), projects: [] },
+    {
+      name: "a read_docs call that failed is not a Play",
+      event: readDocs("no-such-package", { tool_response: { isError: true } }),
+      projects: [],
+    },
+    {
+      name: "Context7 reads are not Plays",
+      event: { tool_name: "mcp__context7__get-library-docs", tool_input: { context7CompatibleLibraryID: "/colinhacks/zod" }, session_id: "s1" },
+      projects: [],
+    },
+    {
+      name: "WebFetch reads are not Plays",
+      event: { tool_name: "WebFetch", tool_input: { url: "https://zod.dev" }, session_id: "s1" },
+      projects: [],
+    },
+    {
+      name: "another server's read_docs tool is not a Play",
+      event: { tool_name: "mcp__other__read_docs", tool_input: { package: "zod" }, session_id: "s1" },
+      projects: [],
+    },
+  ])("$name", ({ event, projects }) => {
+    expect(playsFromToolEvent(event, at)).toEqual(
+      projects.map((project) => ({ kind: "docs", project, session_id: "s1", at })),
+    );
+  });
+});

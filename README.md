@@ -16,15 +16,22 @@ Point Claude Code at it by adding the capture hook to `~/.claude/settings.json`:
 ```json
 {
   "env": { "PLAYCOUNT_URL": "http://localhost:3000", "PLAYCOUNT_KEY": "pk_local" },
+  "permissions": { "allow": ["mcp__playcount__read_docs"] },
   "hooks": {
     "PostToolUse": [
-      { "matcher": "Write|Edit|MultiEdit", "hooks": [{ "type": "command", "command": "node /path/to/playcount/src/capture/hook.ts" }] }
+      { "matcher": "Write|Edit|MultiEdit|mcp__playcount__read_docs", "hooks": [{ "type": "command", "command": "node /path/to/playcount/src/capture/hook.ts" }] }
     ]
   }
 }
 ```
 
-When the agent writes or edits code that imports an npm package (`import`, `require` or `import()`), a Play appears on the dashboard. If PlayCount is unreachable, Plays wait in `~/.playcount/queue.jsonl` (or `$PLAYCOUNT_QUEUE_DIR`) and are sent on a later run. The dashboard also shows this month's statement: each Project your Agent played, with its import Plays, docs Plays and lines written. The same totals come from `GET /api/statement?period=YYYY-MM` with your PlayCount key in an `Authorization: Bearer …` header (the period defaults to the current month, UTC).
+Then add the PlayCount docs tool, a local MCP server with one tool, `read_docs(package)`, that returns a package's README from the npm registry:
+
+```sh
+claude mcp add --scope user playcount -- node /path/to/playcount/src/capture/docs-server.ts
+```
+
+When the agent writes or edits code that imports an npm package (`import`, `require` or `import()`), or reads a package's docs with `read_docs`, a Play appears on the dashboard. Docs read through Context7 or WebFetch are not counted. If PlayCount is unreachable, Plays wait in `~/.playcount/queue.jsonl` (or `$PLAYCOUNT_QUEUE_DIR`) and are sent on a later run. The dashboard also shows this month's statement: each Project your Agent played, with its import Plays, docs Plays and lines written. The same totals come from `GET /api/statement?period=YYYY-MM` with your PlayCount key in an `Authorization: Bearer …` header (the period defaults to the current month, UTC).
 
 Only the Play log leaves your machine, never source code ([ADR 0001](docs/adr/0001-play-log-only-no-source-code.md)).
 

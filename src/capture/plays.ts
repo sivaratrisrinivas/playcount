@@ -6,8 +6,13 @@ import { isProjectName, type Play } from "../play.ts";
 export type ToolEvent = {
   tool_name: string;
   tool_input: Record<string, unknown>;
+  tool_response?: unknown;
   session_id: string;
 };
+
+// The PlayCount docs tool as Claude Code names it: server "playcount", tool "read_docs".
+// Only our own tool counts; Context7 and WebFetch reads are out of scope for v1.
+export const DOCS_TOOL = "mcp__playcount__read_docs";
 
 const builtins = new Set(builtinModules.flatMap((m) => [m, `node:${m}`]));
 
@@ -118,6 +123,21 @@ function extensionOf(path: unknown): string | undefined {
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : undefined;
 }
 
+function failed(response: unknown): boolean {
+  return typeof response === "object" && response !== null && (response as { isError?: unknown }).isError === true;
+}
+
+// The Project a read_docs `package` argument names, or null when it names none.
+// Shared by the docs tool and the hook so both credit the same Project.
+export function docsProjectOf(pkg: unknown): string | null {
+  return typeof pkg === "string" ? projectOf(pkg.trim()) : null;
+}
+
+function docsPlays(event: ToolEvent, at: string): Play[] {
+  const project = failed(event.tool_response) ? null : docsProjectOf(event.tool_input.package);
+  return project ? [{ kind: "docs", project, session_id: event.session_id, at }] : [];
+}
+
 // Lines of the new text that are not in the old text (each old line cancels one copy).
 // Indentation is ignored, so re-indented lines are not new.
 function addedLines(oldText: string, newText: string): Set<number> {
@@ -164,6 +184,7 @@ function editsOf(event: ToolEvent): Edit[] {
 // `fileContents` is the edited file as it is on disk after the tool ran; the hook
 // reads it locally for Edit and MultiEdit so imports at the top of the file resolve.
 export function playsFromToolEvent(event: ToolEvent, at: string, fileContents?: string): Play[] {
+  if (event.tool_name === DOCS_TOOL) return docsPlays(event, at);
   const counts = new Map<string, number>();
   if (event.tool_name === "Write") {
     const content = event.tool_input.content;
