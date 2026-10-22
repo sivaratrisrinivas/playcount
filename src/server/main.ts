@@ -1,10 +1,15 @@
 // Starts the PlayCount service. Developers sign up with GitHub when GITHUB_CLIENT_ID and
 // GITHUB_CLIENT_SECRET are set. A demo Developer can also be seeded from PLAYCOUNT_DEMO_KEY;
-// visitors who have not signed in see their dashboard. With GROQ_API_KEY or ASSEMBLYAI_API_KEY set,
-// an AI model proposes Weightings (see weigher.ts); without either, they come from Play counts.
+// visitors who have not signed in see their dashboard, with a seeded Budget (PLAYCOUNT_DEMO_BUDGET
+// dollars, default 10). Developers fund their own Budgets through PayPal Subscriptions when
+// PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET are set (PAYPAL_API_URL defaults to the sandbox).
+// With GROQ_API_KEY or ASSEMBLYAI_API_KEY set, an AI model proposes Weightings (see weigher.ts);
+// without either, they come from Play counts.
+import { budgetCents } from "./app.ts";
 import { inMemoryDevelopers, type Developer } from "./developers.ts";
 import { githubOAuth } from "./github.ts";
 import { inMemoryLedger } from "./ledger.ts";
+import { paypalRest } from "./paypal.ts";
 import { startServer } from "./server.ts";
 import { weigherFromEnv } from "./weigher.ts";
 
@@ -16,17 +21,32 @@ const github =
   env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET
     ? githubOAuth({ clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET })
     : undefined;
+const paypal =
+  env.PAYPAL_CLIENT_ID && env.PAYPAL_CLIENT_SECRET
+    ? paypalRest({ clientId: env.PAYPAL_CLIENT_ID, clientSecret: env.PAYPAL_CLIENT_SECRET, apiUrl: env.PAYPAL_API_URL || undefined })
+    : undefined;
 const weigher = weigherFromEnv(env);
 if (!demo && !github) {
   console.error("Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET for sign-up, or PLAYCOUNT_DEMO_KEY to seed a demo Developer.");
   process.exit(1);
 }
 
+const ledger = inMemoryLedger();
+if (demo) {
+  const cents = budgetCents(env.PLAYCOUNT_DEMO_BUDGET || "10");
+  if (!cents) {
+    console.error("PLAYCOUNT_DEMO_BUDGET must be a dollar amount from 1 to 1000.");
+    process.exit(1);
+  }
+  ledger.recordBudget(demo.id, { amountCents: cents, since: new Date().toISOString() });
+}
+
 const server = await startServer({
-  ledger: inMemoryLedger(),
+  ledger,
   developers: inMemoryDevelopers(demo ? [demo] : []),
   demoDeveloperId: demo?.id,
   github,
+  paypal,
   weigher,
   // Render sets RENDER_EXTERNAL_URL to the service's public https address.
   publicUrl: env.PLAYCOUNT_PUBLIC_URL || env.RENDER_EXTERNAL_URL,
@@ -35,4 +55,5 @@ const server = await startServer({
 console.log(`PlayCount listening on ${server.url}`);
 if (weigher) console.log(`Weightings are proposed by ${weigher.model}.`);
 if (!github) console.log("GitHub sign-in is off: GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are not set.");
+if (!paypal) console.log("Budgets are off: PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET are not set.");
 if (!weigher) console.log("AI Weighting is off: neither GROQ_API_KEY nor ASSEMBLYAI_API_KEY is set, so Weightings come from Play counts.");
