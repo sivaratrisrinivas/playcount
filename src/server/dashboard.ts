@@ -1,6 +1,7 @@
 import { html, raw } from "hono/html";
 import type { Play } from "../play.ts";
 import type { Statement } from "./statement.ts";
+import type { Share, Weighting } from "./weighting.ts";
 
 // Whether this service offers GitHub sign-in ("off" when it has no GitHub OAuth app configured).
 export type SignIn = "available" | "off";
@@ -9,6 +10,10 @@ export type DashboardView = {
   name: string;
   plays: Play[];
   statement: Statement;
+  // The current period's Weighting, once one has been proposed.
+  weighting?: Weighting;
+  // Whether this browser may propose, adjust and approve: only the signed-in Developer can.
+  canWeigh: boolean;
   // Marks where the page's Plays end in the live Play stream.
   cursor: string;
   signIn: SignIn;
@@ -64,7 +69,7 @@ function setupSection({ key, installCommand }: { key: string; installCommand: st
 // The Developer's dashboard: the current period's statement, then their Plays, newest first.
 // It renders the Plays recorded so far, then follows the live Play stream so the counter and
 // list update while the Agent works. A visitor who has not signed in sees the demo Developer's.
-export function dashboardPage({ name, plays, statement, cursor, signIn, setup }: DashboardView) {
+export function dashboardPage({ name, plays, statement, weighting, canWeigh, cursor, signIn, setup }: DashboardView) {
   return html`<!doctype html>
 <html lang="en">
 ${head()}
@@ -75,6 +80,7 @@ ${head()}
     <h2 id="statement-title">Statement for ${statement.period}</h2>
     <p id="statement-empty" ${statement.projects.length ? "hidden" : ""}>No Plays this period yet.</p>
     <div id="statement-grid" ${statement.projects.length ? "" : "hidden"}></div>
+    ${weightingSection(statement, weighting, canWeigh)}
     <h2>Plays</h2>
     <p class="summary">
       ${name}'s Plays: <strong id="count" data-cursor="${cursor}">${plays.length}</strong>
@@ -90,9 +96,63 @@ ${head()}
   <script src="/vendor/ag-grid-community.min.js"></script>
   <script>${raw(GRID)}</script>
   <script>${raw(SCRIPT)}</script>
+  ${canWeigh && weighting?.status === "proposed" ? html`<script>${raw(WEIGHTING)}</script>` : ""}
   ${setup ? html`<script>${raw(COPY)}</script>` : ""}
 </body>
 </html>`;
+}
+
+const day = (iso: string) => iso.slice(0, 10);
+
+const proposeForm = (period: string, label: string) =>
+  html`<form method="post" action="/weighting/propose"><input type="hidden" name="period" value="${period}"><button type="submit">${label}</button></form>`;
+
+// The AI model's proposed split of the Budget for the period, with a reason per Project. While it is
+// a proposal the signed-in Developer can adjust the shares and approve it; once approved it is
+// locked. A visitor who has not signed in sees it read-only.
+function weightingSection(statement: Statement, weighting: Weighting | undefined, canWeigh: boolean) {
+  const { period } = statement;
+  const section = (body: unknown) => html`<section id="weighting"><h2>Weighting for ${period}</h2>${body}</section>`;
+  if (!weighting) {
+    if (!statement.projects.length || !canWeigh) return "";
+    return section(html`
+      <p>An AI model reads this period's Play log (never your code) and proposes how to split your Budget among these Projects, with a reason for each. You can adjust the shares before approving.</p>
+      ${proposeForm(period, "Propose Weighting")}`);
+  }
+  const source =
+    weighting.proposed_by === "play counts"
+      ? html`Proposed from Play counts on ${day(weighting.proposed_at)}, because the AI model was unavailable`
+      : html`Proposed by ${weighting.proposed_by} on ${day(weighting.proposed_at)}`;
+  const adjusted = weighting.adjusted ? ", then adjusted" : "";
+  const sharesTable = (shareCell: (s: Share) => unknown, foot: unknown = "") => html`<table>
+        <thead><tr><th>Project</th><th class="num">Share</th><th>Reason</th></tr></thead>
+        <tbody>${weighting.shares.map((s) => html`<tr><td>${s.project}</td><td class="num">${shareCell(s)}</td><td>${s.reason}</td></tr>`)}</tbody>
+        ${foot}
+      </table>`;
+  const readOnly = sharesTable((s) => `${s.share}%`);
+
+  if (weighting.status === "approved") {
+    const by = weighting.approved_by === "auto" ? "Auto-approved" : "Approved by the Developer";
+    return section(html`
+      <p class="note"><strong>${by}</strong> on ${day(weighting.approved_at ?? "")}. ${source}${adjusted}. It is locked for this period.</p>
+      ${readOnly}`);
+  }
+  const deadline = html`It auto-approves on ${day(weighting.auto_approves_at)} unless approved first.`;
+  if (!canWeigh) return section(html`<p class="note">${source}${adjusted}. ${deadline}</p>${readOnly}`);
+  return section(html`
+      <p class="note">${source}${adjusted}. ${deadline}</p>
+      <form method="post" action="/weighting/adjust" id="weighting-adjust">
+        <input type="hidden" name="period" value="${period}">
+        ${sharesTable(
+          (s) => html`<input type="hidden" name="project" value="${s.project}"><input type="number" name="share" value="${s.share}" min="0" max="100" step="0.01" required aria-label="${s.project} share">%`,
+          html`<tfoot><tr><th>Total</th><th class="num"><span id="weighting-total">100</span>%</th><th></th></tr></tfoot>`,
+        )}
+        <p class="actions"><button type="submit" id="weighting-save">Save adjustments</button> <span class="hint">Shares must add up to 100%.</span></p>
+      </form>
+      <div class="actions">
+        <form method="post" action="/weighting/approve"><input type="hidden" name="period" value="${period}"><button type="submit" class="primary">Approve Weighting</button></form>
+        ${proposeForm(period, "Propose again")}
+      </div>`);
 }
 
 // One Play as a dashboard row, both in the page and in the live Play stream.
@@ -130,6 +190,27 @@ const SCRIPT = `
     void count.offsetWidth;
     count.classList.add("bump");
   };
+})();
+`;
+
+// Keeps a running total of the adjusted shares and only lets the Developer save 100%.
+// Approving uses the saved shares, so it waits until unsaved edits are saved.
+const WEIGHTING = `
+(() => {
+  const form = document.getElementById("weighting-adjust");
+  const inputs = [...form.querySelectorAll('input[name="share"]')];
+  const total = document.getElementById("weighting-total");
+  const save = document.getElementById("weighting-save");
+  const approve = document.querySelector('form[action="/weighting/approve"] button');
+  const update = () => {
+    const hundredths = inputs.reduce((sum, i) => sum + Math.round(Number(i.value) * 100), 0);
+    total.textContent = String(hundredths / 100);
+    total.classList.toggle("off", hundredths !== 10000);
+    save.disabled = hundredths !== 10000;
+    approve.disabled = inputs.some((i) => i.value !== i.defaultValue);
+  };
+  form.addEventListener("input", update);
+  update();
 })();
 `;
 
@@ -189,6 +270,14 @@ const STYLE = `
   .command { display: flex; gap: 8px; align-items: flex-start; }
   .command pre { flex: 1; margin: 0; padding: 10px; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
   code { overflow-wrap: anywhere; }
+  #weighting .note { color: var(--muted); }
+  #weighting input[type="number"] { width: 5.5em; font: inherit; padding: 2px 4px; margin-right: 2px; text-align: right; }
+  #weighting .num { text-align: right; white-space: nowrap; }
+  #weighting .off { color: #c0392b; font-weight: 600; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+  .actions form { margin: 0; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   .hint { margin-left: 8px; font-size: 13px; color: var(--muted); }
   .live { margin-left: 8px; font-size: 13px; color: var(--muted); }
   .live::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--muted); vertical-align: 1px; }

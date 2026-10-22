@@ -1,20 +1,26 @@
 import type { Play } from "../play.ts";
+import type { Weighting } from "./weighting.ts";
 
 // Called with each newly recorded Play and its number in the Developer's Play log (1-based).
 export type PlayListener = (play: Play, number: number) => void;
 
 // The Ledger owns everything PlayCount records about money and usage.
-// For now it holds Plays; Budgets, Weightings and Royalties arrive with later tickets.
+// For now it holds Plays and Weightings; Budgets and Royalties arrive with later tickets.
 export interface Ledger {
   recordPlays(developerId: string, plays: Play[]): void;
   playsOf(developerId: string): Play[];
   // Listens for one Developer's new Plays; returns a function that stops listening.
   onPlays(developerId: string, listener: PlayListener): () => void;
+  // One Weighting per Developer and period; recording one replaces the last.
+  weightingOf(developerId: string, period: string): Weighting | undefined;
+  recordWeighting(developerId: string, weighting: Weighting): void;
 }
 
 export function inMemoryLedger(): Ledger {
   const plays = new Map<string, Play[]>();
   const listeners = new Map<string, Set<PlayListener>>();
+  const weightings = new Map<string, Weighting>();
+  const weightingKey = (developerId: string, period: string) => `${developerId} ${period}`;
   return {
     recordPlays(developerId, batch) {
       const before = plays.get(developerId) ?? [];
@@ -33,6 +39,13 @@ export function inMemoryLedger(): Ledger {
         set.delete(listener);
         if (set.size === 0) listeners.delete(developerId);
       };
+    },
+    weightingOf(developerId, period) {
+      const weighting = weightings.get(weightingKey(developerId, period));
+      return weighting && structuredClone(weighting);
+    },
+    recordWeighting(developerId, weighting) {
+      weightings.set(weightingKey(developerId, weighting.period), structuredClone(weighting));
     },
   };
 }
