@@ -2,6 +2,7 @@ import { html, raw } from "hono/html";
 import type { Play } from "../play.ts";
 import type { Budget } from "./ledger.ts";
 import { dollars } from "./money.ts";
+import { PAYOUT_FEE_CENTS, type PublicSettlement, type RoyaltyStatus } from "./settlement.ts";
 import type { Statement } from "./statement.ts";
 import type { Share, Weighting } from "./weighting.ts";
 
@@ -14,7 +15,9 @@ export type DashboardView = {
   statement: Statement;
   // The current period's Weighting, once one has been proposed.
   weighting?: Weighting;
-  // Whether this browser may propose, adjust and approve: only the signed-in Developer can.
+  // The current period's Settlement, once it has been settled.
+  settlement?: PublicSettlement;
+  // Whether this browser may propose, adjust, approve and settle: only the signed-in Developer can.
   canWeigh: boolean;
   // Marks where the page's Plays end in the live Play stream.
   cursor: string;
@@ -97,7 +100,7 @@ function budgetSection(budget: Budget | undefined, budgetForm: boolean) {
 // The Developer's dashboard: the current period's statement, then their Plays, newest first.
 // It renders the Plays recorded so far, then follows the live Play stream so the counter and
 // list update while the Agent works. A visitor who has not signed in sees the demo Developer's.
-export function dashboardPage({ name, plays, statement, weighting, canWeigh, cursor, signIn, setup, budget, budgetForm }: DashboardView) {
+export function dashboardPage({ name, plays, statement, weighting, settlement, canWeigh, cursor, signIn, setup, budget, budgetForm }: DashboardView) {
   return html`<!doctype html>
 <html lang="en">
 ${head()}
@@ -110,6 +113,7 @@ ${head()}
     <p id="statement-empty" ${statement.projects.length ? "hidden" : ""}>No Plays this period yet.</p>
     <div id="statement-grid" ${statement.projects.length ? "" : "hidden"}></div>
     ${weightingSection(statement, weighting, canWeigh)}
+    ${settlementSection(statement, weighting, settlement, budget, canWeigh)}
     <h2>Plays</h2>
     <p class="summary">
       ${name}'s Plays: <strong id="count" data-cursor="${cursor}">${plays.length}</strong>
@@ -182,6 +186,58 @@ function weightingSection(statement: Statement, weighting: Weighting | undefined
         <form method="post" action="/weighting/approve"><input type="hidden" name="period" value="${period}"><button type="submit" class="primary">Approve Weighting</button></form>
         ${proposeForm(period, "Propose again")}
       </div>`);
+}
+
+const STATUS: Record<RoyaltyStatus, string> = {
+  sending: "Sending",
+  sent: "Sent via PayPal",
+  "unclaimed-held": "Unclaimed, held",
+  "rolled-over": "Rolled over",
+};
+
+const settleForm = (period: string, label: string, enabled = true) =>
+  html`<form method="post" action="/settle"><input type="hidden" name="period" value="${period}"><button type="submit" class="primary"${enabled ? "" : " disabled"}>${label}</button></form>`;
+
+// Where every cent of the period's spendable amount went: each Royalty and its status, the PayPal
+// fees paid from the Pool, and what rolled over. Before the period is settled, the signed-in
+// Developer gets the "Settle now" button.
+function settlementSection(statement: Statement, weighting: Weighting | undefined, settlement: PublicSettlement | undefined, budget: Budget | undefined, canSettle: boolean) {
+  const { period } = statement;
+  const section = (body: unknown) => html`<section id="settlement"><h2>Settlement for ${period}</h2>${body}</section>`;
+  if (!settlement) {
+    if (!canSettle || !budget) return "";
+    const played = statement.projects.length > 0;
+    const ready = !played || weighting?.status === "approved";
+    const hint = !played
+      ? "No Plays this period, so settling rolls your whole Budget over to your next Settlement."
+      : ready
+        ? "Pays claimed Projects through PayPal now, holds Unclaimed royalties until their Projects are claimed, and rolls Royalties under $1 over."
+        : "Approve the Weighting first.";
+    return section(html`<div class="actions">${settleForm(period, "Settle now", ready)}<span class="hint">${hint}</span></div>`);
+  }
+  const s = settlement;
+  const note =
+    s.status === "settled"
+      ? html`Settled on ${day(s.settled_at)}${s.payout_batch_id ? html`, PayPal Payouts batch <code>${s.payout_batch_id}</code>` : ""}.`
+      : s.status === "payout-failed"
+        ? html`<strong>PayPal did not confirm the payouts.</strong> Settling again retries the same batch, which PayPal never pays twice.`
+        : html`Sending the payouts to PayPal…`;
+  const rollover = s.rollover_in_cents ? html` + ${dollars(s.rollover_in_cents)} rolled over` : "";
+  const fees = s.payouts === 1 ? "1 payout" : `${s.payouts} payouts`;
+  return section(html`
+      <p class="note">${note}</p>
+      <table>
+        <thead><tr><th>Project</th><th class="num">Share</th><th class="num">Royalty</th><th>Status</th></tr></thead>
+        <tbody>${s.royalties.map(
+          (r) => html`<tr data-project="${r.project}" data-status="${r.status}"><td>${r.project}</td><td class="num">${r.share}%</td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}">${STATUS[r.status]}</span></td></tr>`,
+        )}</tbody>
+        <tfoot>
+          <tr id="settlement-fees"><td colspan="2">PayPal fees, paid from the Pool (${fees} at ${dollars(PAYOUT_FEE_CENTS)})</td><td class="num">${dollars(s.fees_cents)}</td><td></td></tr>
+          <tr id="settlement-rollover"><td colspan="2">Rolled over to your next Settlement</td><td class="num">${dollars(s.rolled_over_cents)}</td><td></td></tr>
+          <tr><th colspan="2">Spendable: ${dollars(s.budget_cents)} Budget${rollover}</th><th class="num">${dollars(s.spendable_cents)}</th><th></th></tr>
+        </tfoot>
+      </table>
+      ${s.status === "payout-failed" && canSettle ? html`<div class="actions">${settleForm(period, "Retry payouts")}</div>` : ""}`);
 }
 
 // One Play as a dashboard row, both in the page and in the live Play stream.
@@ -301,7 +357,11 @@ const STYLE = `
   code { overflow-wrap: anywhere; }
   form.budget input { width: 6em; font: inherit; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); }
   form.budget button { margin-left: 8px; }
-  #weighting .note { color: var(--muted); }
+  #weighting .note, #settlement .note { color: var(--muted); }
+  #settlement .num { text-align: right; white-space: nowrap; }
+  #settlement tfoot td, #settlement tfoot th { color: var(--muted); }
+  .status { font-size: 13px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); white-space: nowrap; }
+  .status.sent { color: var(--accent); border-color: var(--accent); }
   #weighting input[type="number"] { width: 5.5em; font: inherit; padding: 2px 4px; margin-right: 2px; text-align: right; }
   #weighting .num { text-align: right; white-space: nowrap; }
   #weighting .off { color: #c0392b; font-weight: 600; }

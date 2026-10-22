@@ -4,7 +4,10 @@
 // dollars, default 10). Developers fund their own Budgets through PayPal Subscriptions when
 // PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET are set (PAYPAL_API_URL defaults to the sandbox).
 // With GROQ_API_KEY or ASSEMBLYAI_API_KEY set, an AI model proposes Weightings (see weigher.ts);
-// without either, they come from Play counts.
+// without either, they come from Play counts. Until maintainers can Claim Projects, claimed Projects
+// are seeded from PLAYCOUNT_SEED_CLAIMS, e.g. "hono=sb-xyz@personal.example.com" (comma-separated),
+// so "settle now" can pay a sandbox account.
+import { isProjectName } from "../play.ts";
 import { budgetCents } from "./app.ts";
 import { inMemoryDevelopers, type Developer } from "./developers.ts";
 import { githubOAuth } from "./github.ts";
@@ -39,6 +42,15 @@ if (demo) {
     process.exit(1);
   }
   ledger.recordBudget(demo.id, { amountCents: cents, since: new Date().toISOString() });
+}
+for (const entry of (env.PLAYCOUNT_SEED_CLAIMS ?? "").split(",").filter((e) => e.trim())) {
+  const [project = "", payoutEmail = ""] = entry.split("=").map((part) => part.trim());
+  if (!isProjectName(project) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payoutEmail)) {
+    console.error(`PLAYCOUNT_SEED_CLAIMS entries are project=payout-email; "${entry}" is not.`);
+    process.exit(1);
+  }
+  ledger.recordClaim(project, { payoutEmail });
+  console.log(`Seeded a Claim: ${project} is paid through PayPal.`);
 }
 
 const server = await startServer({

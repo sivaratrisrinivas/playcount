@@ -1,5 +1,5 @@
-// The PayPal adapter: Subscriptions that fund Developers' Budgets (and, with #11, Payouts to
-// Projects). The real one talks to PayPal's REST API; tests use the fake.
+// The PayPal adapter: Subscriptions that fund Developers' Budgets, and Payouts batches that pay
+// Projects their Royalties. The real one talks to PayPal's REST API; tests use the fake.
 
 // PayPal's Subscription statuses. Only ACTIVE means the Developer approved it and was charged.
 export type SubscriptionStatus = "APPROVAL_PENDING" | "APPROVED" | "ACTIVE" | "SUSPENDED" | "CANCELLED" | "EXPIRED";
@@ -22,11 +22,23 @@ export type NewSubscription = {
   cancelUrl: string;
 };
 
+// One Royalty paid to one claimed Project's payout address.
+export type PayoutItem = { project: string; receiver: string; amountCents: number; note: string };
+
+export type PayoutBatch = {
+  // Our id for the batch. PayPal refuses a second batch with the same id, so sending it again is
+  // safe: it never pays twice, and the answer names the batch PayPal already has.
+  senderBatchId: string;
+  items: PayoutItem[];
+};
+
 export interface PayPal {
   // Creates a monthly Subscription awaiting the Developer's approval; returns PayPal's approve link.
   createSubscription(sub: NewSubscription): Promise<{ id: string; approveUrl: string }>;
   // The Subscription as PayPal has it now, or undefined if PayPal has no such Subscription.
   subscription(id: string): Promise<Subscription | undefined>;
+  // Sends the batch, or finds the one PayPal already has under its senderBatchId; returns PayPal's batch id.
+  sendPayouts(batch: PayoutBatch): Promise<{ payoutBatchId: string }>;
 }
 
 // PayPal's Subscription ids look like I-3LEKCLHWYE52.
@@ -131,6 +143,30 @@ export function paypalRest({ clientId, clientSecret, apiUrl = SANDBOX_API }: { c
         developerId: typeof custom_id === "string" ? custom_id : "",
       };
     },
+
+    async sendPayouts({ senderBatchId, items }) {
+      const res = await call("POST", "/v1/payments/payouts", {
+        sender_batch_header: {
+          sender_batch_id: senderBatchId,
+          email_subject: "You have a royalty from PlayCount",
+          email_message: "Developers' AI coding agents relied on your project. PlayCount pays it a royalty from their monthly budgets.",
+        },
+        items: items.map((item, i) => ({
+          recipient_type: "EMAIL",
+          receiver: item.receiver,
+          amount: { value: decimal(item.amountCents), currency: "USD" },
+          note: item.note,
+          sender_item_id: `${senderBatchId}-${i + 1}`,
+        })),
+      });
+      const batchId = (res.json?.batch_header as { payout_batch_id?: unknown } | undefined)?.payout_batch_id;
+      if (res.status === 201 && typeof batchId === "string") return { payoutBatchId: batchId };
+      // Sent before (say the first answer was lost): PayPal refuses it and links the batch it has.
+      const details = (res.json?.details ?? []) as { field?: string; link?: { href?: string }[] }[];
+      const existing = details.find((d) => d.field === "SENDER_BATCH_ID")?.link?.[0]?.href?.match(/\/payouts\/([A-Z0-9]+)$/)?.[1];
+      if (res.status === 400 && existing) return { payoutBatchId: existing };
+      throw new Error(`PayPal POST /v1/payments/payouts answered ${res.status}: ${JSON.stringify(res.json)}`);
+    },
   };
 }
 
@@ -142,12 +178,20 @@ export type FakePayPal = PayPal & {
   cancel(id: string): void;
   // The Subscriptions created so far, newest last, with the return and cancel links they were given.
   created: (Subscription & { returnUrl: string; cancelUrl: string })[];
+  // The Payouts batches PayPal has accepted, oldest first.
+  payouts: (PayoutBatch & { payoutBatchId: string })[];
+  // The next sendPayouts fails before PayPal takes the batch.
+  failNext(): void;
+  // PayPal takes the next batch, but its answer never arrives.
+  loseNextAnswer(): void;
 };
 
 // A PayPal whose Subscriptions start APPROVAL_PENDING; approve() makes one ACTIVE at once,
 // as the sandbox does for SUBSCRIBE_NOW, unless activateLater is set.
 export function fakePayPal({ activateLater = false } = {}): FakePayPal {
   const created: FakePayPal["created"] = [];
+  const payouts: FakePayPal["payouts"] = [];
+  let next: "fail" | "lose" | undefined;
   const find = (id: string) => created.find((s) => s.id === id);
   const set = (id: string, status: SubscriptionStatus) => {
     const sub = find(id);
@@ -155,6 +199,7 @@ export function fakePayPal({ activateLater = false } = {}): FakePayPal {
   };
   return {
     created,
+    payouts,
     async createSubscription(sub) {
       const id = `I-FAKE${String(created.length + 1).padStart(8, "0")}`;
       created.push({ id, status: "APPROVAL_PENDING", ...sub });
@@ -167,5 +212,19 @@ export function fakePayPal({ activateLater = false } = {}): FakePayPal {
     approve: (id) => set(id, activateLater ? "APPROVED" : "ACTIVE"),
     activate: (id) => set(id, "ACTIVE"),
     cancel: (id) => set(id, "CANCELLED"),
+    async sendPayouts(batch) {
+      const mishap = next;
+      next = undefined;
+      if (mishap === "fail") throw new Error("PayPal is unreachable");
+      let sent = payouts.find((p) => p.senderBatchId === batch.senderBatchId);
+      if (!sent) {
+        sent = { ...structuredClone(batch), payoutBatchId: `FAKEBATCH${payouts.length + 1}` };
+        payouts.push(sent);
+      }
+      if (mishap === "lose") throw new Error("PayPal's answer was lost");
+      return { payoutBatchId: sent.payoutBatchId };
+    },
+    failNext: () => void (next = "fail"),
+    loseNextAnswer: () => void (next = "lose"),
   };
 }

@@ -19,6 +19,9 @@ services:
         sync: false
       - key: PAYPAL_CLIENT_SECRET
         sync: false
+      # Claimed Projects seeded until maintainers can Claim, as project=payout-email pairs.
+      - key: PLAYCOUNT_SEED_CLAIMS
+        sync: false
       # The Weighting model: Groq (preferred) or AssemblyAI's LLM Gateway, not the Anthropic API.
       - key: GROQ_API_KEY
         sync: false

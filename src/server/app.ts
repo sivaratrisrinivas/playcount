@@ -13,6 +13,7 @@ import { centsOf } from "./money.ts";
 import { isSubscriptionId, type PayPal } from "./paypal.ts";
 import type { Ledger } from "./ledger.ts";
 import { dashboardPage, landingPage, playRow } from "./dashboard.ts";
+import { publicSettlement, settlementService } from "./settlement.ts";
 import { isPeriod, periodOf, statementOf } from "./statement.ts";
 import type { Weigher } from "./weigher.ts";
 import { weightingService, type WeightingResult } from "./weighting.ts";
@@ -24,7 +25,8 @@ export type AppDeps = {
   demoDeveloperId?: string;
   // GitHub sign-in; without it, only the seeded Developer exists.
   github?: GitHub;
-  // PayPal Subscriptions for Developers' Budgets; without it, no Budget can be chosen.
+  // PayPal Subscriptions for Developers' Budgets and Payouts for Royalties; without it, no Budget
+  // can be chosen and no Royalty paid.
   paypal?: PayPal;
   // The address Developers reach this service at, e.g. https://playcount.onrender.com.
   // Behind a proxy the request's own URL can say http, so this is configured.
@@ -76,6 +78,7 @@ export const installCommand = (url: string, key: string) =>
 export function createApp({ ledger, developers, demoDeveloperId, github, paypal, publicUrl, weigher, clock = () => new Date() }: AppDeps) {
   const app = new Hono();
   const weightings = weightingService({ ledger, weigher, clock });
+  const settlements = settlementService({ ledger, currentWeighting: weightings.current, paypal, clock });
   // Names this service run in stream cursors, so a browser's cursor from an earlier run is spotted.
   const run = (Date.now() + Math.random()).toString(36).replace(".", "");
   const cursor = (count: number) => `${run}.${count}`;
@@ -317,6 +320,36 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
   );
   app.post("/weighting/approve", (c) => weightingForm(c, (id, period) => weightings.approve(id, period)));
 
+  // "Settle now": settles the key's Developer's period (?period=YYYY-MM, default the current one).
+  // 201 when this call settled it, 200 when it was already settled; it never pays twice.
+  app.post("/api/settle", async (c) => {
+    const developer = developerOf(c);
+    if (!developer) return c.json({ error: "unknown PlayCount key" }, 401);
+    const period = c.req.query("period") ?? periodOf(clock());
+    if (!isPeriod(period)) return c.json({ error: "period must be a month written YYYY-MM" }, 400);
+    const result = await settlements.settle(developer.id, period);
+    return result.ok ? c.json(publicSettlement(result.settlement), result.status) : c.json({ error: result.error }, result.status);
+  });
+  app.get("/api/settlement", (c) => {
+    const developer = developerOf(c);
+    if (!developer) return c.json({ error: "unknown PlayCount key" }, 401);
+    const period = c.req.query("period") ?? periodOf(clock());
+    if (!isPeriod(period)) return c.json({ error: "period must be a month written YYYY-MM" }, 400);
+    const result = settlements.read(developer.id, period);
+    return result.ok ? c.json(publicSettlement(result.settlement)) : c.json({ error: result.error }, result.status);
+  });
+
+  // The dashboard's "Settle now" button, for the signed-in Developer only, like the Weighting forms.
+  app.post("/settle", async (c) => {
+    const developer = signedIn(c);
+    if (!developer) return c.text("Sign in to settle your Budget.", 401);
+    const form = await c.req.parseBody();
+    const period = typeof form.period === "string" ? form.period : periodOf(clock());
+    if (!isPeriod(period)) return c.text("The period must be a month written YYYY-MM.", 400);
+    const result = await settlements.settle(developer.id, period);
+    return result.ok ? c.redirect("/#settlement", 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
+  });
+
   // Render polls this before switching traffic to a new deploy.
   app.get("/health", (c) => c.json({ status: "ok" }));
 
@@ -332,8 +365,21 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     const budget = ledger.budgetOf(viewer.id);
     // Only a signed-in Developer without a Budget is offered the form, and only when PayPal is set up.
     const budgetForm = Boolean(developer && paypal && !budget);
+    const settlement = ledger.settlementOf(viewer.id, statement.period);
     return c.html(
-      dashboardPage({ name: viewer.name, plays, statement, weighting, canWeigh: Boolean(developer), cursor: cursor(plays.length), setup, signIn, budget, budgetForm }),
+      dashboardPage({
+        name: viewer.name,
+        plays,
+        statement,
+        weighting,
+        settlement: settlement && publicSettlement(settlement),
+        canWeigh: Boolean(developer),
+        cursor: cursor(plays.length),
+        setup,
+        signIn,
+        budget,
+        budgetForm,
+      }),
     );
   });
 
