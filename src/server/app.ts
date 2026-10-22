@@ -12,6 +12,7 @@ import type { GitHub } from "./github.ts";
 import { centsOf } from "./money.ts";
 import { isSubscriptionId, type PayPal } from "./paypal.ts";
 import type { Ledger } from "./ledger.ts";
+import { monthlyBatch } from "./batch.ts";
 import { dashboardPage, landingPage, playRow } from "./dashboard.ts";
 import { publicSettlement, settlementService } from "./settlement.ts";
 import { isPeriod, periodOf, statementOf } from "./statement.ts";
@@ -35,9 +36,6 @@ export type AppDeps = {
   weigher?: Weigher;
   // Decides the current period and when Weightings auto-approve; tests pass a controllable one.
   clock?: () => Date;
-  // How often payouts PayPal has not finished are read back into the Ledger; without it, only
-  // POST /api/reconcile and the dashboard's "Check PayPal now" read them.
-  reconcileEveryMs?: number;
 };
 
 // Keeps idle live streams open through proxies that drop silent connections.
@@ -78,21 +76,12 @@ export function budgetCents(amount: unknown) {
 export const installCommand = (url: string, key: string) =>
   `curl -fsSL ${url}/install.ts | node --input-type=module-typescript - ${url} ${key}`;
 
-export function createApp({ ledger, developers, demoDeveloperId, github, paypal, publicUrl, weigher, clock = () => new Date(), reconcileEveryMs }: AppDeps) {
+export function createApp({ ledger, developers, demoDeveloperId, github, paypal, publicUrl, weigher, clock = () => new Date() }: AppDeps) {
   const app = new Hono();
   const weightings = weightingService({ ledger, weigher, clock });
   const settlements = settlementService({ ledger, currentWeighting: weightings.current, paypal, clock });
-  let reconcilingAll = false;
-  const reconciler =
-    reconcileEveryMs &&
-    setInterval(() => {
-      if (reconcilingAll) return;
-      reconcilingAll = true;
-      settlements
-        .reconcileAll()
-        .catch((err) => console.error("Payout reconciliation failed:", err))
-        .finally(() => (reconcilingAll = false));
-    }, reconcileEveryMs).unref();
+  // Shares the services above with "settle now", so the two can never settle a period twice.
+  const batch = monthlyBatch({ ledger, developers, weightings, settle: settlements.settle, clock });
   // Names this service run in stream cursors, so a browser's cursor from an earlier run is spotted.
   const run = (Date.now() + Math.random()).toString(36).replace(".", "");
   const cursor = (count: number) => `${run}.${count}`;
@@ -437,5 +426,5 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     return c.body(await agGrid, 200, { "content-type": "text/javascript; charset=utf-8" });
   });
 
-  return { app, close: () => reconciler && clearInterval(reconciler) };
+  return { app, runMonthlyBatch: batch.run, reconcilePayouts: settlements.reconcileAll };
 }

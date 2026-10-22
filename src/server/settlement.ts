@@ -20,13 +20,15 @@ const WHOLE = 10_000; // 100%, in hundredths of a percent
 
 // "sending" only while the Payouts batch is unconfirmed; it becomes "sent" once PayPal takes it,
 // then "paid" when PayPal delivers it, or "returned-held" when PayPal fails or returns the payout.
-export type RoyaltyStatus = "sending" | "sent" | "paid" | "returned-held" | "unclaimed-held" | "rolled-over";
+// A simulated Budget collects no money, so a claimed Project's Royalty from one is "simulated":
+// recorded, never sent, so no real Budget's money ever pays for simulated Plays.
+export type RoyaltyStatus = "sending" | "sent" | "paid" | "returned-held" | "unclaimed-held" | "rolled-over" | "simulated";
 // A paid-out Royalty's payout item as PayPal last reported it, with the fee PayPal charged for it.
 export type Payout = { item_id?: string; status: PayoutItemStatus; fee_cents: number };
 export type Royalty = { project: string; share: number; amount_cents: number; status: RoyaltyStatus; payout?: Payout };
 
 // All amounts are integer US cents, and every cent of the spendable amount (Budget plus the
-// Rollover carried in) is accounted for: sent + held + rolled over + fees = spendable.
+// Rollover carried in) is accounted for: sent + held + rolled over + fees (+ simulated) = spendable.
 export type Settlement = {
   id: string;
   period: string;
@@ -45,6 +47,9 @@ export type Settlement = {
   payout_batch_id?: string;
   // When PayPal's payout statuses were last read back.
   reconciled_at?: string;
+  // Set when a simulated Developer's Budget paid for it, with the Royalties it recorded but never sent.
+  simulated?: true;
+  simulated_cents?: number;
   // What is sent to PayPal, kept so a retry sends exactly the same batch.
   batch?: PayoutBatch;
 };
@@ -99,7 +104,7 @@ function totalsAfterReconciliation(settlement: Settlement, royalties: Royalty[])
   const fees = royalties.filter((r) => TO_PAYPAL.includes(r.status)).reduce((t, r) => t + fee(r), 0);
   const sent = total(royalties, DELIVERED);
   const held = total(royalties, HELD);
-  return { ...settlement, royalties, fees_cents: fees, sent_cents: sent, held_cents: held, rolled_over_cents: settlement.spendable_cents - sent - held - fees };
+  return { ...settlement, royalties, fees_cents: fees, sent_cents: sent, held_cents: held, rolled_over_cents: settlement.spendable_cents - sent - held - fees - (settlement.simulated_cents ?? 0) };
 }
 
 export function settlementService({
@@ -133,6 +138,7 @@ export function settlementService({
     const latest = settled.map((s) => s.period).sort().at(-1);
     if (latest && period < latest) return fail(422, `${latest} is already settled, so earlier periods can no longer be`);
 
+    const { simulated } = budget;
     const rolloverIn = rolloverOf(settled);
     const spendable = budget.amountCents + rolloverIn;
     const royalties: Royalty[] = [];
@@ -146,10 +152,10 @@ export function settlementService({
       const shares = weighting.shares.filter((s) => s.share > 0).map((s) => ({ ...s, claim: ledger.claimOf(s.project) }));
       // Each claimed Project's payout fee is set aside first. If its Royalty then rolls over,
       // so does the fee set aside for it.
-      const claimed = shares.filter((s) => s.claim).length;
+      const claimed = simulated ? 0 : shares.filter((s) => s.claim).length;
       const amounts = split(Math.max(0, spendable - claimed * PAYOUT_FEE_CENTS), shares.map((s) => Math.round(s.share * 100)));
       shares.forEach((s, i) => {
-        const status = amounts[i] < MIN_ROYALTY_CENTS ? "rolled-over" : s.claim ? "sending" : "unclaimed-held";
+        const status = amounts[i] < MIN_ROYALTY_CENTS ? "rolled-over" : !s.claim ? "unclaimed-held" : simulated ? "simulated" : "sending";
         royalties.push({ project: s.project, share: s.share, amount_cents: amounts[i], status });
         if (status === "sending") {
           items.push({
@@ -167,6 +173,7 @@ export function settlementService({
     const sent = sum(royalties, "sending");
     const held = sum(royalties, "unclaimed-held");
     const fees = items.length * PAYOUT_FEE_CENTS;
+    const simulatedCents = sum(royalties, "simulated");
     return {
       id,
       period,
@@ -180,8 +187,9 @@ export function settlementService({
       fees_cents: fees,
       sent_cents: sent,
       held_cents: held,
-      rolled_over_cents: spendable - sent - held - fees,
+      rolled_over_cents: spendable - sent - held - fees - simulatedCents,
       batch: items.length ? { senderBatchId: id, items } : undefined,
+      ...(simulated && { simulated, simulated_cents: simulatedCents }),
     };
   }
 
