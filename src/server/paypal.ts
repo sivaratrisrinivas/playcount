@@ -32,7 +32,9 @@ export interface PayPal {
 // PayPal's Subscription ids look like I-3LEKCLHWYE52.
 export const isSubscriptionId = (id: string) => /^I-[A-Z0-9]{6,40}$/.test(id);
 
-export const SANDBOX_API = "https://api-m.sandbox.paypal.com";
+import { centsOf, decimal } from "./money.ts";
+
+const SANDBOX_API = "https://api-m.sandbox.paypal.com";
 const TIMEOUT_MS = 15_000;
 
 type Plan = { billing_cycles?: { tenure_type?: string; pricing_scheme?: { fixed_price?: { value?: string; currency_code?: string } } }[] };
@@ -73,7 +75,7 @@ export function paypalRest({ clientId, clientSecret, apiUrl = SANDBOX_API }: { c
   const planId = (amountCents: number) => {
     let plan = plans.get(amountCents);
     if (!plan) {
-      const value = (amountCents / 100).toFixed(2);
+      const value = decimal(amountCents);
       plan = remember(
         productId().then((product_id) =>
           must("POST", "/v1/billing/plans", {
@@ -120,11 +122,12 @@ export function paypalRest({ clientId, clientSecret, apiUrl = SANDBOX_API }: { c
       // The price lives on the Plan, so it is read from there rather than trusted from the browser.
       const plan = (await must("GET", `/v1/billing/plans/${encodeURIComponent(String(plan_id))}`)) as Plan;
       const price = plan.billing_cycles?.find((c) => c.tenure_type === "REGULAR")?.pricing_scheme?.fixed_price;
-      if (price?.currency_code !== "USD" || !price.value) throw new Error(`PayPal Plan ${plan_id} is not priced in USD`);
+      const amountCents = price?.currency_code === "USD" ? centsOf(price.value) : undefined;
+      if (amountCents === undefined) throw new Error(`PayPal Plan ${plan_id} is not priced in USD`);
       return {
         id,
         status: status as SubscriptionStatus,
-        amountCents: Math.round(Number(price.value) * 100),
+        amountCents,
         developerId: typeof custom_id === "string" ? custom_id : "",
       };
     },

@@ -14,8 +14,7 @@ export interface Ledger {
   playsOf(developerId: string): Play[];
   // Listens for one Developer's new Plays; returns a function that stops listening.
   onPlays(developerId: string, listener: PlayListener): () => void;
-  // Records the Developer's Budget, replacing any earlier one. Recording the same Subscription
-  // again changes nothing; returns whether anything was recorded.
+  // Records the Developer's Budget unless they already have one; returns whether it was recorded.
   recordBudget(developerId: string, budget: Budget): boolean;
   // The Budget Settlement draws on, if the Developer has one.
   budgetOf(developerId: string): Budget | undefined;
@@ -45,8 +44,7 @@ export function inMemoryLedger(): Ledger {
       };
     },
     recordBudget(developerId, budget) {
-      const current = budgets.get(developerId);
-      if (budget.subscriptionId && current?.subscriptionId === budget.subscriptionId) return false;
+      if (budgets.has(developerId)) return false;
       budgets.set(developerId, { ...budget });
       return true;
     },

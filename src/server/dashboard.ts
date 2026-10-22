@@ -1,6 +1,7 @@
 import { html, raw } from "hono/html";
 import type { Play } from "../play.ts";
 import type { Budget } from "./ledger.ts";
+import { dollars } from "./money.ts";
 import type { Statement } from "./statement.ts";
 
 // Whether this service offers GitHub sign-in ("off" when it has no GitHub OAuth app configured).
@@ -65,8 +66,6 @@ function setupSection({ key, installCommand }: { key: string; installCommand: st
       </form>
     </section>`;
 }
-
-const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
 // The active Budget, or for a signed-in Developer without one, the form that funds one through PayPal.
 function budgetSection(budget: Budget | undefined, budgetForm: boolean) {

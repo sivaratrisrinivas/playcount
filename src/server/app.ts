@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { MAX_PLAYS_PER_BATCH as MAX_BATCH, parsePlay, type Play } from "../play.ts";
 import type { Developer, Developers } from "./developers.ts";
 import type { GitHub } from "./github.ts";
+import { centsOf } from "./money.ts";
 import { isSubscriptionId, type PayPal } from "./paypal.ts";
 import type { Ledger } from "./ledger.ts";
 import { dashboardPage, landingPage, playRow } from "./dashboard.ts";
@@ -59,10 +60,9 @@ const token = () => randomBytes(24).toString("base64url");
 // A Budget is a whole or two-decimal dollar amount from $1 to $1000 a month.
 const MIN_BUDGET_CENTS = 100;
 const MAX_BUDGET_CENTS = 100_000;
-function budgetCents(amount: unknown) {
-  if (typeof amount !== "string" || !/^\d{1,4}(\.\d{1,2})?$/.test(amount.trim())) return undefined;
-  const cents = Math.round(Number(amount) * 100);
-  return cents >= MIN_BUDGET_CENTS && cents <= MAX_BUDGET_CENTS ? cents : undefined;
+export function budgetCents(amount: unknown) {
+  const cents = centsOf(amount);
+  return cents !== undefined && cents >= MIN_BUDGET_CENTS && cents <= MAX_BUDGET_CENTS ? cents : undefined;
 }
 
 // The one command a Developer pastes into a terminal to install capture (see install.ts).
@@ -167,11 +167,16 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     });
     if (sub === undefined) return c.text("PayPal has no such Subscription.", 400);
     if (!sub) return c.text("PayPal did not answer. Reload this page in a moment.", 502);
-    if (sub.developerId !== developer.id) return c.text("This Subscription belongs to another Developer.", 403);
-    if (sub.status === "APPROVED") return c.text("PayPal is still activating your Subscription. Reload this page in a few seconds.", 202);
-    if (sub.status !== "ACTIVE") return c.text("This Subscription was not approved, so no Budget was recorded.", 402);
+    if (sub.developerId !== developer.id) return c.text("This PayPal Subscription was set up for another Developer.", 403);
+    if (sub.status === "APPROVED") return c.text("PayPal is still activating your Budget. Reload this page in a few seconds.", 202);
+    if (sub.status !== "ACTIVE") return c.text("PayPal says this Budget was not approved, so none was recorded.", 402);
 
-    ledger.recordBudget(developer.id, { amountCents: sub.amountCents, subscriptionId: sub.id, since: clock().toISOString() });
+    const budget = { amountCents: sub.amountCents, subscriptionId: sub.id, since: clock().toISOString() };
+    const current = ledger.budgetOf(developer.id);
+    // A second approved Subscription (say, from a second tab) never replaces the Budget in use.
+    if (!ledger.recordBudget(developer.id, budget) && current?.subscriptionId !== sub.id) {
+      return c.text(`You already have a Budget, so this one was not recorded. Cancel PayPal Subscription ${sub.id} in your PayPal account to stop its charges.`, 409);
+    }
     return c.redirect("/", 303);
   });
 

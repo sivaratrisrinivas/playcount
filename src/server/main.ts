@@ -3,6 +3,7 @@
 // visitors who have not signed in see their dashboard, with a seeded Budget (PLAYCOUNT_DEMO_BUDGET
 // dollars, default 10). Developers fund their own Budgets through PayPal Subscriptions when
 // PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET are set (PAYPAL_API_URL defaults to the sandbox).
+import { budgetCents } from "./app.ts";
 import { inMemoryDevelopers, type Developer } from "./developers.ts";
 import { githubOAuth } from "./github.ts";
 import { inMemoryLedger } from "./ledger.ts";
@@ -28,9 +29,9 @@ if (!demo && !github) {
 
 const ledger = inMemoryLedger();
 if (demo) {
-  const cents = Math.round(Number(env.PLAYCOUNT_DEMO_BUDGET || 10) * 100);
-  if (!(cents >= 100)) {
-    console.error("PLAYCOUNT_DEMO_BUDGET must be a dollar amount of at least 1.");
+  const cents = budgetCents(env.PLAYCOUNT_DEMO_BUDGET || "10");
+  if (!cents) {
+    console.error("PLAYCOUNT_DEMO_BUDGET must be a dollar amount from 1 to 1000.");
     process.exit(1);
   }
   ledger.recordBudget(demo.id, { amountCents: cents, since: new Date().toISOString() });

@@ -258,6 +258,21 @@ describe("A Developer with an active Budget", () => {
     expect(paypal.created).toHaveLength(1);
   });
 
+  it("keeps their first Budget when a second Subscription from another tab is approved too", async () => {
+    const b = await signedIn();
+    await chooseBudget(b, "10");
+    await chooseBudget(b, "20");
+    const [first, second] = paypal.created;
+    paypal.approve(first.id);
+    paypal.approve(second.id);
+    expect((await returnFromPayPal(b, first.id)).status).toBe(303);
+
+    const res = await returnFromPayPal(b, second.id);
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain(`Cancel PayPal Subscription ${second.id}`);
+    expect(ledger.budgetOf(ADA)).toMatchObject({ amountCents: 1000, subscriptionId: first.id });
+  });
+
   it("keeps their Budget separate from other Developers'", async () => {
     const b = await signedIn();
     await chooseBudget(b, "10");
