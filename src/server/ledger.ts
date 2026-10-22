@@ -34,8 +34,9 @@ export interface Ledger {
   // One Settlement per Developer and period; recording one replaces the last.
   settlementOf(developerId: string, period: string): Settlement | undefined;
   settlementsOf(developerId: string): Settlement[];
-  // Every Developer's Settlements, for what is held for a Project across all of them.
-  allSettlements(): Settlement[];
+  // Every Developer's Settlements: what is held for a Project across all of them, and which
+  // payouts PayPal has not finished.
+  allSettlements(): { developerId: string; settlement: Settlement }[];
   recordSettlement(developerId: string, settlement: Settlement): void;
 }
 
@@ -96,7 +97,7 @@ export function inMemoryLedger(): Ledger {
       return [...(settlements.get(developerId)?.values() ?? [])].map((s) => structuredClone(s));
     },
     allSettlements() {
-      return [...settlements.values()].flatMap((mine) => [...mine.values()]).map((s) => structuredClone(s));
+      return [...settlements].flatMap(([developerId, mine]) => [...mine.values()].map((s) => ({ developerId, settlement: structuredClone(s) })));
     },
     recordSettlement(developerId, settlement) {
       const mine = settlements.get(developerId) ?? new Map<string, Settlement>();

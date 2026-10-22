@@ -3,10 +3,12 @@
 // Royalties under $1 over to the Developer's next Settlement. Unclaimed royalties the Developer's
 // earlier Settlements held for a Project are paid in their first Settlement after it is claimed.
 // A period is settled once: settling it again returns the same Settlement, and a batch PayPal did
-// not confirm is retried under the same batch id, which PayPal refuses to pay twice.
+// not confirm is retried under the same batch id, which PayPal refuses to pay twice. Once a batch
+// is sent, reconciliation reads each payout item's status back from PayPal until all are final; a
+// payout PayPal fails or returns puts its money back in the Pool, held for its Project.
 import { randomBytes } from "node:crypto";
 import type { Claim, Ledger } from "./ledger.ts";
-import type { PayoutBatch, PayoutItem, PayPal } from "./paypal.ts";
+import { isFinalPayout, isRejectedBatch, senderItemId, type PayoutBatch, type PayoutItem, type PayoutItemStatus, type PayPal } from "./paypal.ts";
 import { periodOf, statementOf } from "./statement.ts";
 import type { Weighting } from "./weighting.ts";
 
@@ -17,14 +19,19 @@ export const PAYOUT_FEE_CENTS = 25;
 const MIN_ROYALTY_CENTS = 100;
 const WHOLE = 10_000; // 100%, in hundredths of a percent
 
-// "sending" only while the Payouts batch is unconfirmed; it becomes "sent" once PayPal takes it.
+// "sending" only while the Payouts batch is unconfirmed; it becomes "sent" once PayPal takes it,
+// then "paid" when PayPal delivers it, or "returned-held" when PayPal fails or returns the payout.
 // A simulated Budget collects no money, so a claimed Project's Royalty from one is "simulated":
 // recorded, never sent, so no real Budget's money ever pays for simulated Plays.
-export type RoyaltyStatus = "sending" | "sent" | "unclaimed-held" | "rolled-over" | "simulated";
-export type Royalty = { project: string; share: number; amount_cents: number; status: RoyaltyStatus };
+export type RoyaltyStatus = "sending" | "sent" | "paid" | "returned-held" | "unclaimed-held" | "rolled-over" | "simulated";
+// A paid-out Royalty's payout item as PayPal last reported it, with the fee PayPal charged for it.
+// A Project's Royalty and Release share one payout item, so both carry the same Payout.
+export type Payout = { item_id?: string; status: PayoutItemStatus; fee_cents: number };
+export type Royalty = { project: string; share: number; amount_cents: number; status: RoyaltyStatus; payout?: Payout };
 // Unclaimed royalties earlier Settlements held for a Project, paid by this one now it is claimed.
-// A simulated Developer's are recorded as "simulated", never sent.
-export type Release = { project: string; amount_cents: number; status: "sending" | "sent" | "simulated" };
+// A simulated Developer's are recorded as "simulated", never sent. One PayPal fails or returns is
+// "returned-held": held for the Project again, so a later Settlement releases it once more.
+export type Release = { project: string; amount_cents: number; status: "sending" | "sent" | "paid" | "returned-held" | "simulated"; payout?: Payout };
 
 // All amounts are integer US cents, and every cent of the spendable amount (Budget plus the
 // Rollover carried in) is accounted for: sent + held + rolled over + fees (+ simulated) = spendable.
@@ -40,13 +47,15 @@ export type Settlement = {
   royalties: Royalty[];
   releases: Release[];
   released_cents: number;
-  // Payout items sent, each costing one PAYOUT_FEE_CENTS.
+  // Payout items sent. Each has PAYOUT_FEE_CENTS set aside; a fee PayPal does not charge rolls over.
   payouts: number;
   fees_cents: number;
   sent_cents: number;
   held_cents: number;
   rolled_over_cents: number;
   payout_batch_id?: string;
+  // When PayPal's payout statuses were last read back.
+  reconciled_at?: string;
   // Set when a simulated Developer's Budget paid for it, with the Royalties it recorded but never sent.
   simulated?: true;
   simulated_cents?: number;
@@ -81,6 +90,34 @@ function split(cents: number, hundredths: number[]): number[] {
 const sum = (royalties: Royalty[], status: RoyaltyStatus) =>
   royalties.filter((r) => r.status === status).reduce((total, r) => total + r.amount_cents, 0);
 
+// The Royalty statuses whose money was delivered, or is held in the Pool.
+const DELIVERED: RoyaltyStatus[] = ["sent", "paid"];
+const HELD: RoyaltyStatus[] = ["unclaimed-held", "returned-held"];
+const total = (royalties: Royalty[], statuses: RoyaltyStatus[]) => statuses.reduce((t, status) => t + sum(royalties, status), 0);
+
+// The Projects whose payout item is still with PayPal, its status not yet final.
+export const awaitingPayPal = (s: Pick<Settlement, "status" | "royalties" | "releases">) =>
+  s.status === "settled" ? new Set([...s.royalties, ...s.releases].filter((r) => r.status === "sent").map((r) => r.project)) : new Set<string>();
+
+const royaltyStatusOf = (status: PayoutItemStatus): "sent" | "paid" | "returned-held" => {
+  if (!isFinalPayout(status)) return "sent";
+  return status === "SUCCESS" ? "paid" : "returned-held";
+};
+
+// The Settlement's totals once PayPal's payout statuses are read back: a Royalty PayPal did not
+// deliver is held, and a fee PayPal did not charge rolls over, so every spendable cent is still
+// accounted for. If a later period is already settled, that fee reaches the one after it.
+function totalsAfterReconciliation(settlement: Settlement, royalties: Royalty[], releases: Release[]): Settlement {
+  // One fee per payout item, whether it carries a Royalty, a Release or both.
+  const payoutOf = (project: string) => (royalties.find((r) => r.project === project) ?? releases.find((r) => r.project === project))?.payout;
+  const fee = (payout?: Payout) => (payout && isFinalPayout(payout.status) ? Math.min(payout.fee_cents, PAYOUT_FEE_CENTS) : PAYOUT_FEE_CENTS);
+  const fees = (settlement.batch?.items ?? []).reduce((t, item) => t + fee(payoutOf(item.project)), 0);
+  const sent = total(royalties, DELIVERED);
+  const held = total(royalties, HELD);
+  const rolledOver = settlement.spendable_cents - sent - held - fees - (settlement.simulated_cents ?? 0);
+  return { ...settlement, royalties, releases, fees_cents: fees, sent_cents: sent, held_cents: held, rolled_over_cents: rolledOver };
+}
+
 // What these Settlements still hold for each Project: their Unclaimed royalties, less what
 // Settlements since have released. A release counts from the moment it is recorded, even before
 // PayPal confirms it, so a held Royalty is never paid twice.
@@ -88,8 +125,9 @@ export function heldByProject(settlements: Settlement[]): Map<string, number> {
   const held = new Map<string, number>();
   const add = (project: string, cents: number) => held.set(project, (held.get(project) ?? 0) + cents);
   for (const s of settlements) {
-    for (const r of s.royalties) if (r.status === "unclaimed-held") add(r.project, r.amount_cents);
-    for (const r of s.releases) add(r.project, -r.amount_cents);
+    // A payout PayPal failed or returned puts its money back among what is held for the Project.
+    for (const r of s.royalties) if (r.status === "unclaimed-held" || r.status === "returned-held") add(r.project, r.amount_cents);
+    for (const r of s.releases) if (r.status !== "returned-held") add(r.project, -r.amount_cents);
   }
   return held;
 }
@@ -108,6 +146,8 @@ export function settlementService({
 }) {
   // Settlements whose Payouts batch is with PayPal right now, by Developer and period.
   const paying = new Set<string>();
+  // Settlements whose payout statuses are being read back right now, by Developer and period.
+  const reconciling = new Map<string, Promise<SettlementResult>>();
 
   // The Rollover the Developer's next Settlement starts with: everything rolled over so far,
   // less what earlier Settlements already carried in.
@@ -237,7 +277,59 @@ export function settlementService({
     }
   }
 
+  async function readPayoutStatuses(developerId: string, settlement: Settlement): Promise<SettlementResult> {
+    const { batch, payout_batch_id } = settlement;
+    if (!batch || !payout_batch_id || !awaitingPayPal(settlement).size) return { ok: true, status: 200, settlement };
+    if (!paypal) return fail(503, NO_PAYPAL);
+    const answer = await paypal.payoutBatch(payout_batch_id).catch((err) => {
+      console.error(`PayPal payout statuses for ${developerId} ${settlement.period} could not be read:`, err);
+    });
+    if (!answer) return fail(502, "PayPal did not answer with the payout statuses. Try again in a moment");
+    const itemOf = (project: string) => {
+      const i = batch.items.findIndex((item) => item.project === project);
+      const item = answer.items.find((s) => s.senderItemId === senderItemId(batch.senderBatchId, i));
+      // A batch PayPal rejected pays none of its items, listed or not, and charges no fee.
+      if (!item && isRejectedBatch(answer.status)) return { status: "DENIED", feeCents: 0 } as const;
+      return item;
+    };
+    // A final status never changes again, and only payouts PayPal reports on are updated. A
+    // Project's Royalty and Release share its payout item, so both take the item's status.
+    const update = <T extends Royalty | Release>(r: T): T => {
+      const item = r.status === "sent" ? itemOf(r.project) : undefined;
+      if (!item) return r;
+      const payout: Payout = { item_id: "payoutItemId" in item ? item.payoutItemId : undefined, status: item.status, fee_cents: item.feeCents };
+      return { ...r, status: royaltyStatusOf(item.status), payout };
+    };
+    const royalties = settlement.royalties.map(update);
+    const releases = settlement.releases.map(update);
+    const reconciled = { ...totalsAfterReconciliation(settlement, royalties, releases), reconciled_at: clock().toISOString() };
+    ledger.recordSettlement(developerId, reconciled);
+    return { ok: true, status: 200, settlement: reconciled };
+  }
+
+  // Reads the period's payout statuses back from PayPal, unless every one is already final.
+  function reconcile(developerId: string, period: string): Promise<SettlementResult> {
+    const key = `${developerId} ${period}`;
+    const running = reconciling.get(key);
+    if (running) return running;
+    const settlement = ledger.settlementOf(developerId, period);
+    if (!settlement) return Promise.resolve(fail(404, "this period has not been settled"));
+    if (settlement.status !== "settled") return Promise.resolve(fail(409, "this period's payouts have not reached PayPal yet; settle again to retry them"));
+    const done = readPayoutStatuses(developerId, settlement).finally(() => reconciling.delete(key));
+    reconciling.set(key, done);
+    return done;
+  }
+
   return {
+    reconcile,
+
+    // Reconciles every Settlement that still has a payout PayPal has not finished.
+    async reconcileAll() {
+      for (const { developerId, settlement } of ledger.allSettlements()) {
+        if (awaitingPayPal(settlement).size) await reconcile(developerId, settlement.period);
+      }
+    },
+
     read(developerId: string, period: string): SettlementResult {
       const settlement = ledger.settlementOf(developerId, period);
       return settlement ? { ok: true, status: 200, settlement } : fail(404, "this period has not been settled");

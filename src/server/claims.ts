@@ -31,7 +31,7 @@ export function claimService({ ledger, npm, github, clock }: { ledger: Ledger; n
     view(project: string): ProjectView {
       const claim = ledger.claimOf(project);
       // A release is shown as paid only once PayPal confirms its batch; until then it is still held.
-      const settlements = ledger.allSettlements().map((s) => (s.status === "settled" ? s : { ...s, releases: [] }));
+      const settlements = ledger.allSettlements().map(({ settlement: s }) => (s.status === "settled" ? s : { ...s, releases: [] }));
       const heldBy = (simulated: boolean) => heldByProject(settlements.filter((s) => Boolean(s.simulated) === simulated)).get(project) ?? 0;
       return {
         project,

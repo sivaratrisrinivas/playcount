@@ -372,6 +372,17 @@ export function createApp({ ledger, developers, demoDeveloperId, github, npm, pa
     return result.ok ? c.json(publicSettlement(result.settlement)) : c.json({ error: result.error }, result.status);
   });
 
+  // Reads the period's payout statuses back from PayPal into the Ledger; changes nothing once
+  // they are all final.
+  app.post("/api/reconcile", async (c) => {
+    const developer = developerOf(c);
+    if (!developer) return c.json({ error: "unknown PlayCount key" }, 401);
+    const period = c.req.query("period") ?? periodOf(clock());
+    if (!isPeriod(period)) return c.json({ error: "period must be a month written YYYY-MM" }, 400);
+    const result = await settlements.reconcile(developer.id, period);
+    return result.ok ? c.json(publicSettlement(result.settlement)) : c.json({ error: result.error }, result.status);
+  });
+
   // The dashboard's "Settle now" button, for the signed-in Developer only, like the Weighting forms.
   app.post("/settle", async (c) => {
     const developer = signedIn(c);
@@ -404,6 +415,16 @@ export function createApp({ ledger, developers, demoDeveloperId, github, npm, pa
     const email = (await c.req.parseBody()).payout_email;
     const result = await claims.claim(project, session, typeof email === "string" ? email.trim() : "");
     return result.ok ? c.redirect(projectPath(project), 303) : c.text(sentence(result.error), result.status);
+  });
+  // The dashboard's "Check PayPal now" button, while payouts are still with PayPal.
+  app.post("/reconcile", async (c) => {
+    const developer = signedIn(c);
+    if (!developer) return c.text("Sign in to check your payouts.", 401);
+    const form = await c.req.parseBody();
+    const period = typeof form.period === "string" ? form.period : periodOf(clock());
+    if (!isPeriod(period)) return c.text("The period must be a month written YYYY-MM.", 400);
+    const result = await settlements.reconcile(developer.id, period);
+    return result.ok ? c.redirect("/#settlement", 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
   });
 
   // Render polls this before switching traffic to a new deploy.
@@ -458,5 +479,5 @@ export function createApp({ ledger, developers, demoDeveloperId, github, npm, pa
     return c.body(await agGrid, 200, { "content-type": "text/javascript; charset=utf-8" });
   });
 
-  return { app, runMonthlyBatch: batch.run };
+  return { app, runMonthlyBatch: batch.run, reconcilePayouts: settlements.reconcileAll };
 }
