@@ -21,7 +21,7 @@ export type Weighting = {
   shares: Share[];
 };
 
-export const AUTO_APPROVE_AFTER_MS = 7 * 24 * 3600 * 1000;
+const AUTO_APPROVE_AFTER_MS = 7 * 24 * 3600 * 1000;
 const WHOLE = 10_000; // 100%, in hundredths of a percent
 const MAX_REASON = 160;
 
@@ -29,6 +29,8 @@ export type WeightingResult =
   | { ok: true; weighting: Weighting }
   | { ok: false; status: 400 | 404 | 409 | 422; error: string };
 
+const LOCKED = "this period's Weighting is approved and locked";
+const NONE = "no Weighting proposed for this period";
 const fail = (status: 400 | 404 | 409 | 422, error: string): WeightingResult => ({ ok: false, status, error });
 const done = (weighting: Weighting): WeightingResult => ({ ok: true, weighting });
 
@@ -65,11 +67,12 @@ function usable(weights: Weight[], lines: StatementLine[]): Weight[] | undefined
   return ok ? kept : undefined;
 }
 
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const byPlays = (lines: StatementLine[]): Weight[] =>
   lines.map((l) => ({
     project: l.project,
     weight: l.import_plays + l.docs_plays + l.lines_written,
-    reason: `${l.import_plays} import Play${l.import_plays === 1 ? "" : "s"}, ${l.docs_plays} docs Play${l.docs_plays === 1 ? "" : "s"}, ${l.lines_written} lines written`,
+    reason: `${count(l.import_plays, "import Play", "import Plays")}, ${count(l.docs_plays, "docs Play", "docs Plays")}, ${count(l.lines_written, "line", "lines")} written`,
   }));
 
 // Checks an adjustment: one share per played Project, each a non-negative percentage with at
@@ -97,10 +100,10 @@ function parseAdjustment(value: unknown, current: Share[]): Map<string, number> 
   return shares;
 }
 
-export type Weightings = ReturnType<typeof weightings>;
-
-export function weightings({ ledger, weigher, clock }: { ledger: Ledger; weigher?: Weigher; clock: () => Date }) {
+export function weightingService({ ledger, weigher, clock }: { ledger: Ledger; weigher?: Weigher; clock: () => Date }) {
   // The Developer's Weighting for the period, auto-approving it first if 7 days have passed.
+  // Auto-approval happens here, when a Weighting is read, so anything that needs to know whether
+  // a period is approved (Settlement included) reads it through this rather than the Ledger.
   function current(developerId: string, period: string): Weighting | undefined {
     const weighting = ledger.weightingOf(developerId, period);
     if (weighting?.status !== "proposed" || clock().getTime() < Date.parse(weighting.auto_approves_at)) return weighting;
@@ -122,20 +125,29 @@ export function weightings({ ledger, weigher, clock }: { ledger: Ledger; weigher
   return {
     current,
 
+    read(developerId: string, period: string): WeightingResult {
+      const weighting = current(developerId, period);
+      return weighting ? done(weighting) : fail(404, NONE);
+    },
+
     async propose(developerId: string, period: string): Promise<WeightingResult> {
-      if (current(developerId, period)?.status === "approved") return fail(409, "this period's Weighting is approved and locked");
+      const before = current(developerId, period);
+      if (before?.status === "approved") return fail(409, LOCKED);
       const statement = statementOf(ledger.playsOf(developerId), period);
       if (!statement.projects.length) return fail(422, "no Plays to weigh in this period");
       const fromClaude = await claudeWeights(statement);
-      // A proposal made while Claude was thinking may have been approved meanwhile.
-      if (current(developerId, period)?.status === "approved") return fail(409, "this period's Weighting is approved and locked");
+      // While Claude was weighing, the Weighting may have been adjusted, approved or proposed again.
+      const after = current(developerId, period);
+      if (after?.status === "approved") return fail(409, LOCKED);
+      if (JSON.stringify(after) !== JSON.stringify(before)) return fail(409, "the Weighting changed while Claude was weighing; reload and try again");
       const now = clock();
       const weighting: Weighting = {
         period,
         status: "proposed",
         proposed_by: fromClaude ? "claude" : "play counts",
         proposed_at: now.toISOString(),
-        auto_approves_at: new Date(now.getTime() + AUTO_APPROVE_AFTER_MS).toISOString(),
+        // Proposing again keeps the first proposal's deadline, so auto-approval cannot be put off.
+        auto_approves_at: before?.auto_approves_at ?? new Date(now.getTime() + AUTO_APPROVE_AFTER_MS).toISOString(),
         adjusted: false,
         shares: toShares(fromClaude ?? byPlays(statement.projects)),
       };
@@ -145,8 +157,8 @@ export function weightings({ ledger, weigher, clock }: { ledger: Ledger; weigher
 
     adjust(developerId: string, period: string, value: unknown): WeightingResult {
       const weighting = current(developerId, period);
-      if (!weighting) return fail(404, "no Weighting proposed for this period");
-      if (weighting.status === "approved") return fail(409, "this period's Weighting is approved and locked");
+      if (!weighting) return fail(404, NONE);
+      if (weighting.status === "approved") return fail(409, LOCKED);
       const shares = parseAdjustment(value, weighting.shares);
       if (typeof shares === "string") return fail(400, shares);
       const adjusted: Weighting = {
@@ -160,8 +172,8 @@ export function weightings({ ledger, weigher, clock }: { ledger: Ledger; weigher
 
     approve(developerId: string, period: string): WeightingResult {
       const weighting = current(developerId, period);
-      if (!weighting) return fail(404, "no Weighting proposed for this period");
-      if (weighting.status === "approved") return fail(409, "this period's Weighting is already approved");
+      if (!weighting) return fail(404, NONE);
+      if (weighting.status === "approved") return fail(409, LOCKED);
       const approved: Weighting = { ...weighting, status: "approved", approved_by: "developer", approved_at: clock().toISOString() };
       ledger.recordWeighting(developerId, approved);
       return done(approved);

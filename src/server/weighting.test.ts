@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startServer, type RunningServer } from "./server.ts";
 import { inMemoryLedger, type Ledger } from "./ledger.ts";
 import { inMemoryDevelopers } from "./developers.ts";
+import { fakeGitHub } from "./github.ts";
 import { fakeWeigher, type Weigher, type WeigherInput } from "./weigher.ts";
 
 const ada = { id: "dev_ada", name: "Ada", key: "pk_ada" };
@@ -30,6 +31,7 @@ async function start({ weigher: w }: { weigher?: Weigher } = { weigher }) {
     developers: inMemoryDevelopers([ada, bob]),
     demoDeveloperId: ada.id,
     weigher: w,
+    github: fakeGitHub({ "code-grace": { id: 7, login: "grace", name: "Grace" } }),
     clock: () => now,
     port: 0,
   });
@@ -221,6 +223,20 @@ describe("Adjusting a Weighting", () => {
   it("is not found when nothing was proposed for the period", async () => {
     expect((await adjust([{ project: "zod", share: 100 }], "?period=2026-09")).status).toBe(404);
   });
+
+  it("is not lost to a proposal Claude was still weighing when it was saved", async () => {
+    let release = () => {};
+    weigher.respond(async ({ projects }) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return projects.map((p) => ({ project: p.project, weight: 1, reason: "Late" }));
+    });
+    const proposing = propose();
+    await expect.poll(() => weigher.calls.length).toBe(2);
+    expect((await adjust([{ project: "zod", share: 99 }, { project: "express", share: 1 }])).status).toBe(200);
+    release();
+    expect((await proposing).status).toBe(409);
+    expect(await sharesOf(await getWeighting())).toMatchObject([{ project: "zod", share: 99 }, { project: "express", share: 1 }]);
+  });
 });
 
 describe("Approving a Weighting", () => {
@@ -275,55 +291,79 @@ describe("Auto-approval", () => {
     expect(ledger.weightingOf(ada.id, "2026-10")).toMatchObject({ status: "approved", approved_by: "auto" });
   });
 
-  it("counts from the latest proposal", async () => {
+  it("counts from the first proposal, so proposing again cannot put it off", async () => {
     now = new Date(now.getTime() + 6 * DAY);
-    await propose();
-    now = new Date(now.getTime() + 6 * DAY);
-    expect(await (await getWeighting()).json()).toMatchObject({ status: "proposed" });
+    const again = await (await propose()).json();
+    expect(again.auto_approves_at).toBe("2026-10-28T18:00:00.000Z");
+    now = new Date(now.getTime() + 1 * DAY);
+    expect(await (await getWeighting()).json()).toMatchObject({ status: "approved", approved_by: "auto" });
   });
 });
 
-// The dashboard's forms, posted by a browser with no PlayCount key.
-const form = (path: string, fields: [string, string][]) =>
-  fetch(`${server.url}${path}`, { method: "POST", body: new URLSearchParams(fields), redirect: "manual" });
+// A browser that keeps cookies and does not follow redirects, signed in as Grace through the fake GitHub.
+async function signedInBrowser() {
+  const jar = new Map<string, string>();
+  const b = async (path: string, init: RequestInit = {}) => {
+    const res = await fetch(new URL(path, server.url), {
+      ...init,
+      redirect: "manual",
+      headers: { ...init.headers, cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; ") },
+    });
+    for (const header of res.headers.getSetCookie()) {
+      const [name, value] = header.split(";")[0].split("=");
+      if (/max-age=0/i.test(header) || value === "") jar.delete(name);
+      else jar.set(name, value);
+    }
+    return res;
+  };
+  const start = await b("/auth/github");
+  const state = new URL(start.headers.get("location")!).searchParams.get("state");
+  await b(`/auth/github/callback?code=code-grace&state=${state}`);
+  const page = async () => (await b("/")).text();
+  const key = (await page()).match(/id="key">(pk_[\w-]+)</)![1];
+  const form = (path: string, fields: [string, string][]) => b(path, { method: "POST", body: new URLSearchParams(fields) });
+  return { page, key, form };
+}
 
 describe("Dashboard Weighting", () => {
-  const page = async () => (await fetch(`${server.url}/`)).text();
-
-  it("offers to propose a Weighting once there are Plays", async () => {
-    expect(await page()).not.toContain('action="/weighting/propose"');
-    await postPlays([play("zod")]);
-    expect(await page()).toContain('action="/weighting/propose"');
+  it("offers the signed-in Developer a proposal once there are Plays", async () => {
+    const grace = await signedInBrowser();
+    expect(await grace.page()).not.toContain('action="/weighting/propose"');
+    await postPlays([play("zod")], grace.key);
+    expect(await grace.page()).toContain('action="/weighting/propose"');
   });
 
   it("proposes, adjusts and approves from the dashboard", async () => {
     weigher.respond(({ projects }) => projects.map((p) => ({ project: p.project, weight: 1, reason: `Reason for ${p.project}` })));
-    await postPlays([play("zod"), play("express")]);
+    const grace = await signedInBrowser();
+    await postPlays([play("zod"), play("express")], grace.key);
 
-    const proposed = await form("/weighting/propose", [["period", "2026-10"]]);
+    const proposed = await grace.form("/weighting/propose", [["period", "2026-10"]]);
     expect(proposed.status).toBe(303);
-    let html = await page();
+    let html = await grace.page();
     expect(html).toContain("Reason for zod");
     expect(html).toContain("Reason for express");
     expect(html).toContain('action="/weighting/adjust"');
     expect(html).toContain('action="/weighting/approve"');
     expect(html).toContain("2026-10-28");
 
-    const adjusted = await form("/weighting/adjust", [["period", "2026-10"], ["project", "zod"], ["share", "70"], ["project", "express"], ["share", "30"]]);
+    const adjusted = await grace.form("/weighting/adjust", [["period", "2026-10"], ["project", "zod"], ["share", "70"], ["project", "express"], ["share", "30"]]);
     expect(adjusted.status).toBe(303);
-    expect(await sharesOf(await getWeighting())).toMatchObject([{ project: "zod", share: 70 }, { project: "express", share: 30 }]);
+    expect(await sharesOf(await getWeighting("?period=2026-10", grace.key))).toMatchObject([{ project: "zod", share: 70 }, { project: "express", share: 30 }]);
 
-    expect((await form("/weighting/approve", [["period", "2026-10"]])).status).toBe(303);
-    html = await page();
+    expect((await grace.form("/weighting/approve", [["period", "2026-10"]])).status).toBe(303);
+    html = await grace.page();
     expect(html).toContain("Approved");
+    expect(html).toContain("70%");
     expect(html).not.toContain('action="/weighting/adjust"');
     expect(html).not.toContain('action="/weighting/approve"');
   });
 
   it("refuses an adjustment from the dashboard that does not sum to 100%", async () => {
-    await postPlays([play("zod"), play("express")]);
-    await form("/weighting/propose", [["period", "2026-10"]]);
-    const res = await form("/weighting/adjust", [["period", "2026-10"], ["project", "zod"], ["share", "70"], ["project", "express"], ["share", "20"]]);
+    const grace = await signedInBrowser();
+    await postPlays([play("zod"), play("express")], grace.key);
+    await grace.form("/weighting/propose", [["period", "2026-10"]]);
+    const res = await grace.form("/weighting/adjust", [["period", "2026-10"], ["project", "zod"], ["share", "70"], ["project", "express"], ["share", "20"]]);
     expect(res.status).toBe(400);
     expect(await res.text()).toMatch(/100%/);
   });
@@ -332,8 +372,29 @@ describe("Dashboard Weighting", () => {
     weigher.respond(() => {
       throw new Error("down");
     });
+    const grace = await signedInBrowser();
+    await postPlays([play("zod")], grace.key);
+    await grace.form("/weighting/propose", [["period", "2026-10"]]);
+    expect(await grace.page()).toContain("Claude was unavailable");
+  });
+
+  it("shows a visitor who has not signed in the demo Developer's Weighting, read-only", async () => {
+    weigher.respond(({ projects }) => projects.map((p) => ({ project: p.project, weight: 1, reason: `Reason for ${p.project}` })));
     await postPlays([play("zod")]);
-    await form("/weighting/propose", [["period", "2026-10"]]);
-    expect(await page()).toContain("Claude was unavailable");
+    expect(await (await fetch(`${server.url}/`)).text()).not.toContain('action="/weighting/propose"');
+    await propose();
+    const html = await (await fetch(`${server.url}/`)).text();
+    expect(html).toContain("Reason for zod");
+    expect(html).not.toContain('action="/weighting/adjust"');
+    expect(html).not.toContain('action="/weighting/approve"');
+  });
+
+  it("does not let a visitor who has not signed in change the demo Developer's Weighting", async () => {
+    await postPlays([play("zod")]);
+    await propose();
+    const post = (path: string) => fetch(`${server.url}${path}`, { method: "POST", body: new URLSearchParams([["period", "2026-10"]]), redirect: "manual" });
+    expect((await post("/weighting/approve")).status).toBe(401);
+    expect((await post("/weighting/propose")).status).toBe(401);
+    expect(await (await getWeighting()).json()).toMatchObject({ status: "proposed" });
   });
 });

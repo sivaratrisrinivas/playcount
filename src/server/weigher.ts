@@ -64,7 +64,7 @@ function parseWeights(content: string): Weight[] {
 // A Weigher that records what it was asked. By default it weighs by Plays plus lines written.
 export function fakeWeigher() {
   const calls: WeigherInput[] = [];
-  let answer = (input: WeigherInput): Weight[] =>
+  let answer = (input: WeigherInput): Weight[] | Promise<Weight[]> =>
     input.projects.map((p) => ({
       project: p.project,
       weight: p.import_plays + p.docs_plays + p.lines_written,
@@ -72,7 +72,7 @@ export function fakeWeigher() {
     }));
   return {
     calls,
-    respond(next: (input: WeigherInput) => Weight[]) {
+    respond(next: (input: WeigherInput) => Weight[] | Promise<Weight[]>) {
       answer = next;
     },
     async weigh(input: WeigherInput) {
