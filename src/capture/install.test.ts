@@ -137,6 +137,15 @@ it("leaves settings whose hooks are not a list untouched", async () => {
   expect(readFileSync(settingsPath, "utf8")).toBe(mine);
 });
 
+it("accepts a seeded demo key, which Render generates as base64", async () => {
+  const demo = { id: "dev_demo", name: "Demo", key: "Ab3+dE5/gH7=jK9+mN1/pQ3=rS5+tU7/vW9=" };
+  await server.close();
+  server = await startServer({ ledger, developers: inMemoryDevelopers([demo]), demoDeveloperId: demo.id, port: 0 });
+  const { code, output } = await install(demo.key);
+  expect(code, output).toBe(0);
+  expect(settings().env?.PLAYCOUNT_KEY).toBe(demo.key);
+});
+
 it("refuses a key that is not a PlayCount key", async () => {
   const { code, output } = await install("not-a-key");
   expect(code).not.toBe(0);
