@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { llmGatewayWeigher, type WeigherInput } from "./weigher.ts";
+import { llmGatewayWeigher, weigherFromEnv, type WeigherInput } from "./weigher.ts";
 
 // A stand-in for the LLM Gateway that records each request and answers with the given content.
 function gateway(content: string, status = 200) {
@@ -66,5 +66,41 @@ describe("LLM Gateway Weigher", () => {
   it("fails when the gateway refuses the request or the model's answer is not JSON", async () => {
     await expect(llmGatewayWeigher({ apiKey: "k", model: "m", fetch: gateway("", 401).fetch }).weigh(input)).rejects.toThrow(/401/);
     await expect(llmGatewayWeigher({ apiKey: "k", model: "m", fetch: gateway("I can't help").fetch }).weigh(input)).rejects.toThrow();
+  });
+});
+
+describe("Choosing the Weigher from the environment", () => {
+  it("prefers Groq's gpt-oss-120b, sending the key as a Bearer token", async () => {
+    const g = gateway('{"weights":[]}');
+    const weigher = weigherFromEnv({ GROQ_API_KEY: "gsk_key", ASSEMBLYAI_API_KEY: "aai_key" }, g.fetch)!;
+    expect(weigher.model).toBe("openai/gpt-oss-120b");
+    await weigher.weigh(input);
+    expect(g.requests[0].url).toBe("https://api.groq.com/openai/v1/chat/completions");
+    expect(g.requests[0].headers.authorization).toBe("Bearer gsk_key");
+    expect(g.requests[0].body.model).toBe("openai/gpt-oss-120b");
+  });
+
+  it("falls back to AssemblyAI's free Qwen model when only that key is set", async () => {
+    const g = gateway('{"weights":[]}');
+    const weigher = weigherFromEnv({ ASSEMBLYAI_API_KEY: "aai_key" }, g.fetch)!;
+    expect(weigher.model).toBe("qwen3.5-4b-32k-fast");
+    await weigher.weigh(input);
+    expect(g.requests[0].url).toBe("https://llm-gateway.assemblyai.com/v1/chat/completions");
+    expect(g.requests[0].headers.authorization).toBe("aai_key");
+  });
+
+  it("uses PLAYCOUNT_WEIGHER_MODEL when it is set", () => {
+    expect(weigherFromEnv({ GROQ_API_KEY: "k", PLAYCOUNT_WEIGHER_MODEL: "llama-3.3-70b-versatile" })!.model).toBe("llama-3.3-70b-versatile");
+  });
+
+  it("is off without a key, so Weightings come from Play counts", () => {
+    expect(weigherFromEnv({})).toBeUndefined();
+  });
+
+  it("reads the Groq model's real answer from Oct 22, 2026, which carries its reasoning separately", async () => {
+    const content =
+      '{\n  "weights": [\n    {\n      "project": "hono",\n      "weight": 82.5,\n      "reason": "High usage (multiple imports, docs consulted, and many lines written)"\n    },\n    {\n      "project": "zod",\n      "weight": 17.5,\n      "reason": "Limited usage (single import and minimal code)"\n    }\n  ]\n}';
+    const weights = await weigherFromEnv({ GROQ_API_KEY: "k" }, gateway(content).fetch)!.weigh(input);
+    expect(weights.map((w) => [w.project, w.weight])).toEqual([["hono", 82.5], ["zod", 17.5]]);
   });
 });

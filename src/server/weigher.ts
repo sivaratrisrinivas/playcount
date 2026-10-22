@@ -1,5 +1,6 @@
-// The Weigher adapter: an AI model reached through AssemblyAI's LLM Gateway. It sees a period's
-// statement, which holds Play-log fields only (ADR 0001); tests use the fake.
+// The Weigher adapter: an AI model behind an OpenAI-style chat completions API, either Groq or
+// AssemblyAI's LLM Gateway. It sees a period's statement, which holds Play-log fields only
+// (ADR 0001); tests use the fake.
 import type { StatementLine } from "./statement.ts";
 
 export type WeigherInput = { period: string; projects: StatementLine[] };
@@ -12,6 +13,7 @@ export interface Weigher {
   weigh(input: WeigherInput): Promise<Weight[]>;
 }
 
+const GROQ = "https://api.groq.com/openai/v1/chat/completions";
 const GATEWAY = "https://llm-gateway.assemblyai.com/v1/chat/completions";
 const TIMEOUT_MS = 30_000;
 
@@ -29,17 +31,19 @@ export const weigherPrompt = ({ period, projects }: WeigherInput) =>
     projects: projects.map(({ project, import_plays, docs_plays, lines_written }) => ({ project, import_plays, docs_plays, lines_written })),
   });
 
-export function llmGatewayWeigher({ apiKey, model, fetch: fetchFn = fetch }: { apiKey: string; model: string; fetch?: typeof fetch }): Weigher {
+type ChatApi = { url: string; authorization: string; model: string; fetch?: typeof fetch };
+
+function chatWeigher({ url, authorization, model, fetch: fetchFn = fetch }: ChatApi): Weigher {
   return {
     model,
     async weigh(input) {
-      const res = await fetchFn(GATEWAY, {
+      const res = await fetchFn(url, {
         method: "POST",
-        // The gateway takes the AssemblyAI key as is, without "Bearer".
-        headers: { authorization: apiKey, "content-type": "application/json" },
+        headers: { authorization, "content-type": "application/json" },
         body: JSON.stringify({
           model,
-          max_tokens: 2000,
+          // Reasoning models such as gpt-oss spend some of these thinking before they answer.
+          max_tokens: 4000,
           messages: [
             { role: "system", content: INSTRUCTIONS },
             { role: "user", content: weigherPrompt(input) },
@@ -47,13 +51,29 @@ export function llmGatewayWeigher({ apiKey, model, fetch: fetchFn = fetch }: { a
         }),
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
-      if (!res.ok) throw new Error(`LLM Gateway answered ${res.status}`);
+      if (!res.ok) throw new Error(`${new URL(url).host} answered ${res.status}`);
       const body = (await res.json()) as { choices?: { message?: { content?: unknown } }[] };
       const content = body.choices?.[0]?.message?.content;
-      if (typeof content !== "string") throw new Error("LLM Gateway sent no message");
+      if (typeof content !== "string") throw new Error(`${new URL(url).host} sent no message`);
       return parseWeights(content);
     },
   };
+}
+
+// AssemblyAI's LLM Gateway takes the AssemblyAI key as is, without "Bearer".
+export const llmGatewayWeigher = ({ apiKey, model, fetch }: { apiKey: string; model: string; fetch?: typeof globalThis.fetch }) =>
+  chatWeigher({ url: GATEWAY, authorization: apiKey, model, fetch });
+
+// Groq's free tier serves openai/gpt-oss-120b without a payment card; AssemblyAI's free plan
+// serves only qwen3.5-4b-32k-fast (both checked Oct 22, 2026). Groq's larger model weighs
+// better, so it wins when both keys are set. PLAYCOUNT_WEIGHER_MODEL picks another model.
+export function weigherFromEnv(env: Record<string, string | undefined>, fetch?: typeof globalThis.fetch): Weigher | undefined {
+  const model = env.PLAYCOUNT_WEIGHER_MODEL || undefined;
+  if (env.GROQ_API_KEY) {
+    return chatWeigher({ url: GROQ, authorization: `Bearer ${env.GROQ_API_KEY}`, model: model ?? "openai/gpt-oss-120b", fetch });
+  }
+  if (env.ASSEMBLYAI_API_KEY) return llmGatewayWeigher({ apiKey: env.ASSEMBLYAI_API_KEY, model: model ?? "qwen3.5-4b-32k-fast", fetch });
+  return undefined;
 }
 
 // Reads the model's answer, tolerating a code fence or a sentence around the JSON.
