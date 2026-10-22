@@ -39,6 +39,8 @@ From the statement, an AI model proposes a Weighting: a share of your Budget for
 
 Settling a period (the dashboard's **Settle now**, or `POST /api/settle?period=YYYY-MM`) pays claimed Projects their Royalties in one PayPal Payouts batch. PlayCount then reads each payout's status back from PayPal every 30 seconds until all are final, or at once with **Check PayPal now** or `POST /api/reconcile?period=YYYY-MM`. A paid Royalty shows as Paid; one PayPal fails or returns goes back to the Pool, held for its Project, and a payout fee PayPal did not charge rolls over to your next Settlement.
 
+A Project with no payout address has its Royalties held as Unclaimed royalties. Its public page, `/projects/<package>` (JSON at `/api/projects/<package>`), shows what is held. A maintainer signs in with GitHub there and claims the Project with one PayPal email; the Claim succeeds only if their GitHub account can push to the repo named in the package's npm `repository` field. Each Developer's next Settlement then pays what their earlier Settlements held for it, and the payout fee comes from the Pool.
+
 ## Deploy to Render
 
 [`render.yaml`](render.yaml) is a Render Blueprint. In Render, choose **New → Blueprint** and pick this repo. It deploys `main` each time CI passes and checks `/health` before switching traffic.

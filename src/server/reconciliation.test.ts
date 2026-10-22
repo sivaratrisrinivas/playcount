@@ -128,6 +128,63 @@ describe("A payout PayPal fails or returns", () => {
   });
 });
 
+describe("A held Royalty paid after its Project is claimed", () => {
+  const settleNovember = async (shares: { project: string; share: number }[]) => {
+    now = new Date("2026-11-20T18:00:00.000Z");
+    expect((await api("/api/plays", { method: "POST", body: JSON.stringify({ plays: shares.map((s) => play(s.project, "2026-11-10T12:00:00.000Z")) }) })).status).toBe(202);
+    expect((await api("/api/weighting/propose?period=2026-11", { method: "POST" })).status).toBe(201);
+    expect((await api("/api/weighting?period=2026-11", { method: "PUT", body: JSON.stringify({ shares }) })).status).toBe(200);
+    expect((await api("/api/weighting/approve?period=2026-11", { method: "POST" })).status).toBe(200);
+    const res = await api("/api/settle?period=2026-11", { method: "POST" });
+    expect(res.status, await res.clone().text()).toBe(201);
+    return (await res.json()) as Settlement & { releases: { project: string; amount_cents: number; status: string }[] };
+  };
+  const heldFor = async (project: string) => ((await (await fetch(`${server.url}/api/projects/${project}`)).json()) as { held_cents: number }).held_cents;
+
+  // October holds $4.88 for express, which is claimed before November is settled.
+  async function octoberHoldsExpress() {
+    expect((await api("/api/plays", { method: "POST", body: JSON.stringify({ plays: [play("hono"), play("express")] }) })).status).toBe(202);
+    await api("/api/weighting/propose?period=2026-10", { method: "POST" });
+    const shares = [{ project: "hono", share: 50 }, { project: "express", share: 50 }];
+    expect((await api("/api/weighting?period=2026-10", { method: "PUT", body: JSON.stringify({ shares }) })).status).toBe(200);
+    await api("/api/weighting/approve?period=2026-10", { method: "POST" });
+    expect((await api("/api/settle?period=2026-10", { method: "POST" })).status).toBe(201);
+    expect(await heldFor("express")).toBe(488);
+    ledger.recordClaim("express", { payoutEmail: "express-maintainers@personal.example.com" });
+  }
+
+  it("holds the released money for its Project again when PayPal fails the payout, so a later Settlement pays it", async () => {
+    await octoberHoldsExpress();
+    const november = await settleNovember([{ project: "hono", share: 100 }]);
+    expect(november.releases).toEqual([{ project: "express", amount_cents: 488, status: "sent" }]);
+    expect(await heldFor("express")).toBe(0);
+
+    paypal.finish("express", "FAILED");
+    const s = (await reconcile("2026-11")) as typeof november;
+    expect(s.releases).toEqual([{ project: "express", amount_cents: 488, status: "returned-held", payout: expect.objectContaining({ status: "FAILED", fee_cents: 0 }) }]);
+    expect(await heldFor("express")).toBe(488);
+    // Its unused fee rolls over like any other.
+    expect(accounted(s)).toBe(s.spendable_cents);
+
+    now = new Date("2026-12-20T18:00:00.000Z");
+    const res = await api("/api/settle?period=2026-12", { method: "POST" });
+    expect(res.status).toBe(201);
+    expect((await res.json()).releases).toEqual([{ project: "express", amount_cents: 488, status: "sent" }]);
+  });
+
+  it("gives a Project's Royalty and Release the status of the one payout item they share", async () => {
+    await octoberHoldsExpress();
+    const november = await settleNovember([{ project: "express", share: 100 }]);
+    expect(paypal.payouts.at(-1)!.items).toHaveLength(1);
+    paypal.finish("express", "SUCCESS");
+    const s = (await reconcile("2026-11")) as typeof november;
+    expect(royalty(s, "express")?.status).toBe("paid");
+    expect(s.releases.map((r) => r.status)).toEqual(["paid"]);
+    expect(s.fees_cents).toBe(25);
+    expect(accounted(s)).toBe(november.spendable_cents);
+  });
+});
+
 describe("Re-running reconciliation", () => {
   it("changes nothing and asks PayPal nothing once every status is final", async () => {
     await settledTwoPayouts();

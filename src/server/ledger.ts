@@ -10,8 +10,9 @@ export type PlayListener = (play: Play, number: number) => void;
 // A simulated Developer's Budget is marked, so every Settlement it pays for is labelled simulated.
 export type Budget = { amountCents: number; subscriptionId?: string; since: string; simulated?: true };
 
-// A Project's Claim: where its Royalties are paid. Until Claims (#13) arrive, Claims are seeded.
-export type Claim = { payoutEmail: string };
+// A Project's Claim: where its Royalties are paid, and the GitHub user who proved push access to
+// its repo. Claims seeded at startup (PLAYCOUNT_SEED_CLAIMS) name no one.
+export type Claim = { payoutEmail: string; claimedBy?: string; claimedAt?: string };
 
 // The Ledger owns everything PlayCount records about money and usage: Plays, Budgets,
 // Weightings, Claims and Settlements, whose Royalties say what was sent, held or rolled over.
@@ -33,7 +34,8 @@ export interface Ledger {
   // One Settlement per Developer and period; recording one replaces the last.
   settlementOf(developerId: string, period: string): Settlement | undefined;
   settlementsOf(developerId: string): Settlement[];
-  // Every Developer's Settlements.
+  // Every Developer's Settlements: what is held for a Project across all of them, and which
+  // payouts PayPal has not finished.
   allSettlements(): { developerId: string; settlement: Settlement }[];
   recordSettlement(developerId: string, settlement: Settlement): void;
 }
