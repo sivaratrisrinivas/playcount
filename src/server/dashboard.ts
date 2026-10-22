@@ -1,5 +1,6 @@
 import { html, raw } from "hono/html";
 import type { Play } from "../play.ts";
+import { projectPath, type ProjectView } from "./claims.ts";
 import type { Budget } from "./ledger.ts";
 import { dollars } from "./money.ts";
 import { PAYOUT_FEE_CENTS, type PublicSettlement, type RoyaltyStatus } from "./settlement.ts";
@@ -56,6 +57,50 @@ ${head()}
     ${header(false, signIn)}
     <p>PlayCount splits your monthly budget among the open-source projects your coding agent actually uses.</p>
     ${signIn === "off" ? html`<p>Sign-in is not configured on this service yet.</p>` : ""}
+  </main>
+</body>
+</html>`;
+}
+
+// A Project's public page: what is held for it and whether it is claimed. A maintainer signs in
+// with GitHub from here, then Claims it with the PayPal email its Royalties go to.
+export function projectPage({ view, signedInAs, signIn }: { view: ProjectView; signedInAs?: string; signIn: SignIn }) {
+  const path = projectPath(view.project);
+  const held = view.held_cents
+    ? html`<p><strong id="held">${dollars(view.held_cents)}</strong> in Unclaimed royalties is held for ${view.project}, from Developers whose coding agents relied on it.</p>`
+    : html`<p id="held-none">No Unclaimed royalties are held for ${view.project} right now.</p>`;
+  const simulated = view.simulated_held_cents
+    ? html`<p class="note" id="simulated-held">Simulated Developers' agents also played it: ${dollars(view.simulated_held_cents)} is held for it from their simulated Budgets, which collect no money and are never paid out.</p>`
+    : "";
+  let claim;
+  if (view.claimed) {
+    const by = view.claimed_by ? html` by ${view.claimed_by} on ${day(view.claimed_at ?? "")}` : "";
+    const paid = view.held_cents ? " What is held is paid as each Developer whose agent played it next settles." : "";
+    claim = html`<p class="note" id="claimed"><strong>Claimed${by}.</strong> Its Royalties are paid through PayPal.${paid}</p>`;
+  } else if (signedInAs) {
+    claim = html`<h2>Claim ${view.project}</h2>
+      <p>PlayCount checks that ${signedInAs} can push to the GitHub repo named in ${view.project}'s npm <code>repository</code> field. All held Unclaimed royalties are then paid at the next Settlement, to one PayPal email for the Project.</p>
+      <form method="post" action="${path}/claim" class="claim">
+        <label>PayPal email <input name="payout_email" type="email" required autocomplete="email"></label>
+        <button type="submit" class="primary">Claim ${view.project}</button>
+      </form>`;
+  } else if (signIn === "available") {
+    claim = html`<h2>Claim ${view.project}</h2>
+      <p>Claim it to be paid what is held and every Royalty after. You need push access to the GitHub repo its npm package names.</p>
+      <p><a class="button" href="/auth/github?next=${encodeURIComponent(path)}">Sign in with GitHub to claim</a></p>`;
+  } else {
+    claim = html`<p class="note">Claims need GitHub sign-in, which is not configured on this service yet.</p>`;
+  }
+  return html`<!doctype html>
+<html lang="en">
+${head()}
+<body>
+  <main id="project">
+    <header><h1><a href="/">PlayCount</a></h1>${signedInAs ? html`<span class="hint">Signed in as ${signedInAs}</span>` : ""}</header>
+    <h2>${view.project}</h2>
+    ${held}
+    ${simulated}
+    ${claim}
   </main>
 </body>
 </html>`;
@@ -232,7 +277,9 @@ function settlementSection(statement: Statement, weighting: Weighting | undefine
       <table>
         <thead><tr><th>Project</th><th class="num">Share</th><th class="num">Royalty</th><th>Status</th></tr></thead>
         <tbody>${s.royalties.map(
-          (r) => html`<tr data-project="${r.project}" data-status="${r.status}"><td>${r.project}</td><td class="num">${r.share}%</td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}">${STATUS[r.status]}</span></td></tr>`,
+          (r) => html`<tr data-project="${r.project}" data-status="${r.status}"><td>${r.status === "unclaimed-held" ? html`<a href="${projectPath(r.project)}">${r.project}</a>` : r.project}</td><td class="num">${r.share}%</td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}">${STATUS[r.status]}</span></td></tr>`,
+        )}${s.releases.map(
+          (r) => html`<tr data-project="${r.project}" data-status="released"><td>${r.project} <span class="hint">held until claimed, from earlier Settlements</span></td><td class="num"></td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}">${STATUS[r.status]}</span></td></tr>`,
         )}</tbody>
         <tfoot>
           <tr id="settlement-fees"><td colspan="2">PayPal fees, paid from the Pool (${fees} at ${dollars(PAYOUT_FEE_CENTS)})</td><td class="num">${dollars(s.fees_cents)}</td><td></td></tr>
@@ -365,6 +412,10 @@ const STYLE = `
   #settlement tfoot td, #settlement tfoot th { color: var(--muted); }
   .status { font-size: 13px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); white-space: nowrap; }
   .status.sent { color: var(--accent); border-color: var(--accent); }
+  h1 a { color: inherit; text-decoration: none; }
+  #project .note { color: var(--muted); }
+  form.claim input { width: 18em; font: inherit; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); }
+  form.claim button { margin-left: 8px; }
   #weighting input[type="number"] { width: 5.5em; font: inherit; padding: 2px 4px; margin-right: 2px; text-align: right; }
   #weighting .num { text-align: right; white-space: nowrap; }
   #weighting .off { color: #c0392b; font-weight: 600; }

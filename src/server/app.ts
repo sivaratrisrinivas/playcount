@@ -6,14 +6,16 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_PLAYS_PER_BATCH as MAX_BATCH, parsePlay, type Play } from "../play.ts";
+import { isProjectName, MAX_PLAYS_PER_BATCH as MAX_BATCH, parsePlay, type Play } from "../play.ts";
+import { claimService, projectPath } from "./claims.ts";
 import type { Developer, Developers } from "./developers.ts";
 import type { GitHub } from "./github.ts";
 import { centsOf } from "./money.ts";
 import { isSubscriptionId, type PayPal } from "./paypal.ts";
 import type { Ledger } from "./ledger.ts";
 import { monthlyBatch } from "./batch.ts";
-import { dashboardPage, landingPage, playRow } from "./dashboard.ts";
+import { dashboardPage, landingPage, playRow, projectPage } from "./dashboard.ts";
+import type { Npm } from "./npm.ts";
 import { publicSettlement, settlementService } from "./settlement.ts";
 import { isPeriod, periodOf, statementOf } from "./statement.ts";
 import type { Weigher } from "./weigher.ts";
@@ -24,8 +26,10 @@ export type AppDeps = {
   developers: Developers;
   // The seeded Developer the dashboard shows to visitors who have not signed in.
   demoDeveloperId?: string;
-  // GitHub sign-in; without it, only the seeded Developer exists.
+  // GitHub sign-in, and the push-access check for Claims; without it, only the seeded Developer exists.
   github?: GitHub;
+  // The npm registry, for the repository a Claim is checked against; without it, no Project can be claimed.
+  npm?: Npm;
   // PayPal Subscriptions for Developers' Budgets and Payouts for Royalties; without it, no Budget
   // can be chosen and no Royalty paid.
   paypal?: PayPal;
@@ -62,7 +66,23 @@ const INSTALLER = "src/capture/install.ts";
 
 const SESSION = "pc_session";
 const OAUTH_STATE = "pc_oauth_state";
+const OAUTH_NEXT = "pc_oauth_next";
 const token = () => randomBytes(24).toString("base64url");
+
+// An API error as a sentence for a browser: "the Project is claimed" → "The Project is claimed."
+const sentence = (error: string) => `${error[0].toUpperCase()}${error.slice(1)}.`;
+
+// The Project a path names after its prefix, e.g. "/projects/@scope/pkg" → "@scope/pkg".
+function projectIn(path: string, prefix: string) {
+  if (!path.startsWith(prefix)) return undefined;
+  let name: string;
+  try {
+    name = decodeURIComponent(path.slice(prefix.length));
+  } catch {
+    return undefined;
+  }
+  return isProjectName(name) ? name : undefined;
+}
 
 // A Budget is a whole or two-decimal dollar amount from $1 to $1000 a month.
 const MIN_BUDGET_CENTS = 100;
@@ -76,10 +96,11 @@ export function budgetCents(amount: unknown) {
 export const installCommand = (url: string, key: string) =>
   `curl -fsSL ${url}/install.ts | node --input-type=module-typescript - ${url} ${key}`;
 
-export function createApp({ ledger, developers, demoDeveloperId, github, paypal, publicUrl, weigher, clock = () => new Date() }: AppDeps) {
+export function createApp({ ledger, developers, demoDeveloperId, github, npm, paypal, publicUrl, weigher, clock = () => new Date() }: AppDeps) {
   const app = new Hono();
   const weightings = weightingService({ ledger, weigher, clock });
   const settlements = settlementService({ ledger, currentWeighting: weightings.current, paypal, clock });
+  const claims = claimService({ ledger, npm, github, clock });
   // Shares the services above with "settle now", so the two can never settle a period twice.
   const batch = monthlyBatch({ ledger, developers, weightings, settle: settlements.settle, clock });
   // Names this service run in stream cursors, so a browser's cursor from an earlier run is spotted.
@@ -91,11 +112,14 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     return key ? developers.byKey(key) : undefined;
   };
 
-  // Signed-in browsers, by session cookie. Kept in memory, like the Ledger for now.
-  const sessions = new Map<string, string>();
+  // Signed-in browsers, by session cookie: the Developer, and the GitHub sign-in whose token checks
+  // a Claim's push access. Kept in memory, like the Ledger for now.
+  type Session = { developerId: string; login: string; token: string };
+  const sessions = new Map<string, Session>();
+  const sessionOf = (c: Context) => sessions.get(getCookie(c, SESSION) ?? "");
   const signedIn = (c: Context): Developer | undefined => {
-    const id = sessions.get(getCookie(c, SESSION) ?? "");
-    return id ? developers.byId(id) : undefined;
+    const session = sessionOf(c);
+    return session ? developers.byId(session.developerId) : undefined;
   };
   // Whose dashboard this browser sees: its signed-in Developer, else the seeded demo Developer.
   const viewerOf = (c: Context) => signedIn(c) ?? (demoDeveloperId ? developers.byId(demoDeveloperId) : undefined);
@@ -105,10 +129,14 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     ({ path: "/", httpOnly: true, sameSite: "Lax", secure: baseUrl(c).startsWith("https:") }) as const;
   const callbackUrl = (c: Context) => `${baseUrl(c)}/auth/github/callback`;
 
+  // ?next= returns the browser to a Project page after sign-in, so a maintainer can Claim it.
   app.get("/auth/github", (c) => {
     if (!github) return c.text("GitHub sign-in is not configured on this PlayCount service.", 503);
     const state = token();
     setCookie(c, OAUTH_STATE, state, { ...cookieOptions(c), maxAge: 600 });
+    const next = c.req.query("next");
+    if (next && projectIn(next, "/projects/")) setCookie(c, OAUTH_NEXT, next, { ...cookieOptions(c), maxAge: 600 });
+    else deleteCookie(c, OAUTH_NEXT, cookieOptions(c));
     return c.redirect(github.authorizeUrl(state, callbackUrl(c)), 302);
   });
 
@@ -120,12 +148,14 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     if (!expected || state !== expected) return c.text("This sign-in link has expired. Sign in again.", 400);
     if (!code) return c.text("GitHub did not complete the sign-in.", 400);
 
-    const user = await github.userFromCode(code, callbackUrl(c)).catch(() => undefined);
-    if (!user) return c.text("GitHub did not accept this sign-in. Sign in again.", 401);
+    const signIn = await github.signInFromCode(code, callbackUrl(c)).catch(() => undefined);
+    if (!signIn) return c.text("GitHub did not accept this sign-in. Sign in again.", 401);
     const session = token();
-    sessions.set(session, developers.signIn(user).id);
+    sessions.set(session, { developerId: developers.signIn(signIn.user).id, login: signIn.user.login, token: signIn.token });
     setCookie(c, SESSION, session, { ...cookieOptions(c), maxAge: 30 * 24 * 3600 });
-    return c.redirect("/", 302);
+    const next = getCookie(c, OAUTH_NEXT);
+    deleteCookie(c, OAUTH_NEXT, cookieOptions(c));
+    return c.redirect(next && projectIn(next, "/projects/") ? next : "/", 302);
   });
 
   app.post("/auth/signout", (c) => {
@@ -308,7 +338,7 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     const period = typeof form.period === "string" ? form.period : periodOf(clock());
     if (!isPeriod(period)) return c.text("The period must be a month written YYYY-MM.", 400);
     const result = await then(developer.id, period, form);
-    return result.ok ? c.redirect("/#weighting", 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
+    return result.ok ? c.redirect("/#weighting", 303) : c.text(sentence(result.error), result.status);
   };
   const list = (value: unknown) => (Array.isArray(value) ? value : value === undefined ? [] : [value]);
   app.post("/weighting/propose", (c) => weightingForm(c, (id, period) => weightings.propose(id, period)));
@@ -350,7 +380,30 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     const period = typeof form.period === "string" ? form.period : periodOf(clock());
     if (!isPeriod(period)) return c.text("The period must be a month written YYYY-MM.", 400);
     const result = await settlements.settle(developer.id, period);
-    return result.ok ? c.redirect("/#settlement", 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
+    return result.ok ? c.redirect("/#settlement", 303) : c.text(sentence(result.error), result.status);
+  });
+
+  // A Project's public page: the Unclaimed royalties held for it, and for a signed-in maintainer,
+  // the Claim form. Scoped names keep their slash: /projects/@scope/pkg.
+  app.get("/api/projects/*", (c) => {
+    const project = projectIn(c.req.path, "/api/projects/");
+    return project ? c.json(claims.view(project)) : c.json({ error: "there is no such Project" }, 404);
+  });
+  app.get("/projects/*", (c) => {
+    const project = projectIn(c.req.path, "/projects/");
+    if (!project) return c.notFound();
+    const session = sessionOf(c);
+    return c.html(projectPage({ view: claims.view(project), signedInAs: session?.login, signIn: github ? "available" : "off" }));
+  });
+  // The Claim form. The session cookie is SameSite=Lax, so another site cannot post it as the maintainer.
+  app.post("/projects/*", async (c) => {
+    const project = c.req.path.endsWith("/claim") ? projectIn(c.req.path.slice(0, -"/claim".length), "/projects/") : undefined;
+    if (!project) return c.notFound();
+    const session = sessionOf(c);
+    if (!session) return c.text(`Sign in with GitHub to claim ${project}.`, 401);
+    const email = (await c.req.parseBody()).payout_email;
+    const result = await claims.claim(project, session, typeof email === "string" ? email.trim() : "");
+    return result.ok ? c.redirect(projectPath(project), 303) : c.text(sentence(result.error), result.status);
   });
 
   // Render polls this before switching traffic to a new deploy.

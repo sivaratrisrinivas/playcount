@@ -4,16 +4,19 @@
 // dollars, default 10). Developers fund their own Budgets through PayPal Subscriptions when
 // PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET are set (PAYPAL_API_URL defaults to the sandbox).
 // With GROQ_API_KEY or ASSEMBLYAI_API_KEY set, an AI model proposes Weightings (see weigher.ts);
-// without either, they come from Play counts. Until maintainers can Claim Projects, claimed Projects
-// are seeded from PLAYCOUNT_SEED_CLAIMS, e.g. "hono=sb-xyz@personal.example.com" (comma-separated),
-// so "settle now" can pay a sandbox account. PLAYCOUNT_SIMULATED_DEVELOPERS (a count, default 0)
-// seeds simulated Developers, labelled as such, with Budgets and Plays since the start of last period. Every hour the
-// monthly batch settles each Developer's ended periods.
+// without either, they come from Play counts. Maintainers Claim Projects with GitHub sign-in, checked
+// against npm's registry; Claims can also be seeded from PLAYCOUNT_SEED_CLAIMS, e.g.
+// "hono=sb-xyz@personal.example.com" (comma-separated), so "settle now" can pay a sandbox account.
+// PLAYCOUNT_SIMULATED_DEVELOPERS (a count, default 0) seeds simulated Developers, labelled as such,
+// with Budgets and Plays since the start of last period. Every hour the monthly batch settles each
+// Developer's ended periods.
 import { isProjectName } from "../play.ts";
 import { budgetCents } from "./app.ts";
+import { isPayoutEmail } from "./claims.ts";
 import { inMemoryDevelopers, type Developer } from "./developers.ts";
 import { githubOAuth } from "./github.ts";
 import { inMemoryLedger } from "./ledger.ts";
+import { npmRegistry } from "./npm.ts";
 import { paypalRest } from "./paypal.ts";
 import { startServer } from "./server.ts";
 import { MAX_SIMULATED, simulatedDevelopers } from "./simulated.ts";
@@ -48,7 +51,7 @@ if (demo) {
 }
 for (const entry of (env.PLAYCOUNT_SEED_CLAIMS ?? "").split(",").filter((e) => e.trim())) {
   const [project = "", payoutEmail = ""] = entry.split("=").map((part) => part.trim());
-  if (!isProjectName(project) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payoutEmail)) {
+  if (!isProjectName(project) || !isPayoutEmail(payoutEmail)) {
     console.error(`PLAYCOUNT_SEED_CLAIMS entries are project=payout-email; "${entry}" is not.`);
     process.exit(1);
   }
@@ -70,6 +73,7 @@ const server = await startServer({
   developers: inMemoryDevelopers([...(demo ? [demo] : []), ...simulated]),
   demoDeveloperId: demo?.id,
   github,
+  npm: npmRegistry(),
   paypal,
   weigher,
   // Render sets RENDER_EXTERNAL_URL to the service's public https address.
