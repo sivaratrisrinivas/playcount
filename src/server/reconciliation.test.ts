@@ -117,6 +117,15 @@ describe("A payout PayPal fails or returns", () => {
     expect(res.status).toBe(201);
     expect(await res.json()).toMatchObject({ rollover_in_cents: 25, spendable_cents: 1025 });
   });
+
+  it("holds every Royalty of a batch PayPal rejects outright", async () => {
+    const settled = await settledTwoPayouts();
+    paypal.deny(paypal.payouts[0].payoutBatchId);
+    const s = await reconcile();
+    expect(s.royalties.map((r) => [r.status, r.payout?.status])).toEqual([["returned-held", "DENIED"], ["returned-held", "DENIED"]]);
+    expect(s).toMatchObject({ sent_cents: 0, held_cents: 950, fees_cents: 0, rolled_over_cents: 50 });
+    expect(accounted(s)).toBe(settled.spendable_cents);
+  });
 });
 
 describe("Re-running reconciliation", () => {
@@ -125,12 +134,12 @@ describe("Re-running reconciliation", () => {
     paypal.finish("hono", "SUCCESS");
     paypal.finish("zod", "FAILED");
     const first = await reconcile();
-    const reads = paypal.itemReads;
+    const reads = paypal.batchReads;
 
     // Even if PayPal later reported something else, a final status stays as recorded.
     paypal.finish("zod", "SUCCESS");
     expect(await reconcile()).toEqual(first);
-    expect(paypal.itemReads).toBe(reads);
+    expect(paypal.batchReads).toBe(reads);
     expect(ledger.settlementOf(ada.id, "2026-10")?.royalties.find((r) => r.project === "zod")?.status).toBe("returned-held");
   });
 
@@ -138,7 +147,7 @@ describe("Re-running reconciliation", () => {
     const res = await api("/api/settle?period=2026-10", { method: "POST" });
     expect(res.status).toBe(201);
     expect(await reconcile()).toMatchObject({ royalties: [], rolled_over_cents: 1000 });
-    expect(paypal.itemReads).toBe(0);
+    expect(paypal.batchReads).toBe(0);
   });
 });
 
@@ -165,7 +174,7 @@ describe("Reconciliation failures", () => {
     await api("/api/weighting/approve?period=2026-10", { method: "POST" });
     expect((await api("/api/settle?period=2026-10", { method: "POST" })).status).toBe(502);
     expect((await api("/api/reconcile?period=2026-10", { method: "POST" })).status).toBe(409);
-    expect(paypal.itemReads).toBe(0);
+    expect(paypal.batchReads).toBe(0);
   });
 });
 
@@ -180,9 +189,9 @@ describe("Reconciling in the background", () => {
     const statuses = () => ledger.settlementOf(ada.id, "2026-10")?.royalties.map((r) => r.status);
     await expect.poll(statuses, { timeout: 2000, interval: 10 }).toEqual(["paid", "paid"]);
     // Once every status is final, PayPal is not asked again.
-    const reads = paypal.itemReads;
+    const reads = paypal.batchReads;
     await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(paypal.itemReads).toBe(reads);
+    expect(paypal.batchReads).toBe(reads);
   });
 });
 
@@ -223,7 +232,7 @@ describe("The dashboard's payouts", () => {
     await reconcile();
     page = section(await (await fetch(server.url)).text());
     expect(statusOf(page, "zod")).toBe("returned-held");
-    expect(page).toContain("PayPal: RETURNED");
+    expect(page).toContain("PayPal says RETURNED");
     expect(page).toMatch(/id="settlement-payouts">PayPal has finished every payout/);
     // A visitor who has not signed in cannot ask PayPal.
     expect(page).not.toContain('action="/reconcile"');
@@ -254,6 +263,6 @@ describe("The dashboard's payouts", () => {
     await settledTwoPayouts();
     const res = await browser()("/reconcile", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "period=2026-10" });
     expect(res.status).toBe(401);
-    expect(paypal.itemReads).toBe(0);
+    expect(paypal.batchReads).toBe(0);
   });
 });

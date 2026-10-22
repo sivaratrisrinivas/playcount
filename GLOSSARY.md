@@ -29,7 +29,7 @@ _Avoid_: Pending payout, escrowed funds
 A royalty whose payout PayPal fails or returns is held in the pool for its project the same way, never lost.
 
 **Rollover**:
-A royalty under $1, or a budget whose agent made no plays that month, carried into the developer's next settlement instead of being paid.
+A royalty under $1, a budget whose agent made no plays that month, or a payout fee PayPal did not charge, carried into the developer's next settlement instead of being paid.
 _Avoid_: Carry-forward, remainder
 
 **Ledger**:

@@ -2,7 +2,7 @@ import { html, raw } from "hono/html";
 import type { Play } from "../play.ts";
 import type { Budget } from "./ledger.ts";
 import { dollars } from "./money.ts";
-import { PAYOUT_FEE_CENTS, type PublicSettlement, type RoyaltyStatus } from "./settlement.ts";
+import { awaitingPayPal, PAYOUT_FEE_CENTS, type PublicSettlement, type RoyaltyStatus } from "./settlement.ts";
 import type { Statement } from "./statement.ts";
 import type { Share, Weighting } from "./weighting.ts";
 
@@ -193,7 +193,7 @@ const STATUS: Record<RoyaltyStatus, string> = {
   sending: "Sending",
   sent: "Sent via PayPal",
   paid: "Paid",
-  "returned-held": "Returned by PayPal, held",
+  "returned-held": "Not paid by PayPal, held",
   "unclaimed-held": "Unclaimed, held",
   "rolled-over": "Rolled over",
 };
@@ -229,11 +229,11 @@ function settlementSection(statement: Statement, weighting: Weighting | undefine
         ? html`<strong>PayPal did not confirm the payouts.</strong> Settling again retries the same batch, which PayPal never pays twice.`
         : html`Sending the payouts to PayPal…`;
   const rollover = s.rollover_in_cents ? html` + ${dollars(s.rollover_in_cents)} rolled over` : "";
-  const fees = s.payouts === 1 ? "1 payout" : `${s.payouts} payouts`;
-  const processing = s.status === "settled" ? s.royalties.filter((r) => r.status === "sent").length : 0;
+  const payouts = (n: number) => (n === 1 ? "1 payout" : `${n} payouts`);
+  const processing = awaitingPayPal(s) ? s.royalties.filter((r) => r.status === "sent").length : 0;
   const checked = s.reconciled_at ? html` Last checked with PayPal at ${time(s.reconciled_at)}.` : "";
   const progress = processing
-    ? html`<p class="note" id="settlement-payouts">PayPal is still processing ${processing === 1 ? "1 payout" : `${processing} payouts`}; PlayCount checks again shortly.${checked}</p>`
+    ? html`<p class="note" id="settlement-payouts">PayPal is still processing ${payouts(processing)}; PlayCount checks again shortly.${checked}</p>`
     : s.reconciled_at
       ? html`<p class="note" id="settlement-payouts">PayPal has finished every payout.${checked}</p>`
       : "";
@@ -242,10 +242,10 @@ function settlementSection(statement: Statement, weighting: Weighting | undefine
       <table>
         <thead><tr><th>Project</th><th class="num">Share</th><th class="num">Royalty</th><th>Status</th></tr></thead>
         <tbody>${s.royalties.map(
-          (r) => html`<tr data-project="${r.project}" data-status="${r.status}"><td>${r.project}</td><td class="num">${r.share}%</td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}"${r.payout ? html` title="PayPal: ${r.payout.status}"` : ""}>${STATUS[r.status]}</span>${r.payout && r.status !== "paid" ? html` <span class="hint">PayPal: ${r.payout.status}</span>` : ""}</td></tr>`,
+          (r) => html`<tr data-project="${r.project}" data-status="${r.status}"><td>${r.project}</td><td class="num">${r.share}%</td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}"${r.payout ? html` title="PayPal: ${r.payout.status}"` : ""}>${STATUS[r.status]}</span>${r.payout && r.status !== "paid" ? html` <span class="hint">PayPal says ${r.payout.status}</span>` : ""}</td></tr>`,
         )}</tbody>
         <tfoot>
-          <tr id="settlement-fees"><td colspan="2">PayPal fees, paid from the Pool (${fees} at ${dollars(PAYOUT_FEE_CENTS)})</td><td class="num">${dollars(s.fees_cents)}</td><td></td></tr>
+          <tr id="settlement-fees"><td colspan="2">PayPal fees, paid from the Pool (${payouts(s.payouts)} at ${dollars(PAYOUT_FEE_CENTS)})</td><td class="num">${dollars(s.fees_cents)}</td><td></td></tr>
           <tr id="settlement-rollover"><td colspan="2">Rolled over to your next Settlement</td><td class="num">${dollars(s.rolled_over_cents)}</td><td></td></tr>
           <tr><th colspan="2">Spendable: ${dollars(s.budget_cents)} Budget${rollover}</th><th class="num">${dollars(s.spendable_cents)}</th><th></th></tr>
         </tfoot>

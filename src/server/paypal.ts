@@ -34,6 +34,7 @@ export type PayoutBatch = {
 
 // PayPal's status for one payout item. PENDING, UNCLAIMED and ONHOLD can still change; the rest
 // are final. Only SUCCESS delivers the Royalty: in the others the money stays with PlayCount.
+// (PayPal's UNCLAIMED means the receiver has not accepted the money yet; it is not an Unclaimed royalty.)
 export type PayoutItemStatus =
   | "PENDING"
   | "UNCLAIMED"
@@ -45,7 +46,14 @@ export type PayoutItemStatus =
   | "REVERSED"
   | "BLOCKED"
   | "DENIED";
-export const isFinalPayout = (status: PayoutItemStatus) => !["PENDING", "UNCLAIMED", "ONHOLD"].includes(status);
+const FINAL: string[] = ["SUCCESS", "FAILED", "RETURNED", "REFUNDED", "REVERSED", "BLOCKED", "DENIED"];
+// A status PayPal sends that is not listed here is treated as still changing, never as final.
+export const isFinalPayout = (status: PayoutItemStatus) => FINAL.includes(status);
+
+// PayPal's status for a whole batch. A DENIED or CANCELED batch pays none of its items, and PayPal
+// may then list no items at all. SUCCESS only means PayPal processed the batch: items can still fail.
+export type PayoutBatchStatus = "PENDING" | "PROCESSING" | "SUCCESS" | "DENIED" | "CANCELED";
+export const isRejectedBatch = (status: PayoutBatchStatus) => status === "DENIED" || status === "CANCELED";
 
 // One item of a Payouts batch as PayPal has it now. Its fee is what PayPal charged: the sandbox
 // charges nothing for a FAILED item but keeps the fee of a RETURNED one.
@@ -61,8 +69,8 @@ export interface PayPal {
   subscription(id: string): Promise<Subscription | undefined>;
   // Sends the batch, or finds the one PayPal already has under its senderBatchId; returns PayPal's batch id.
   sendPayouts(batch: PayoutBatch): Promise<{ payoutBatchId: string }>;
-  // The batch's items as PayPal has them now.
-  payoutItems(payoutBatchId: string): Promise<PayoutItemState[]>;
+  // The batch and its items as PayPal has them now.
+  payoutBatch(payoutBatchId: string): Promise<{ status: PayoutBatchStatus; items: PayoutItemState[] }>;
 }
 
 // PayPal's Subscription ids look like I-3LEKCLHWYE52.
@@ -192,11 +200,14 @@ export function paypalRest({ clientId, clientSecret, apiUrl = SANDBOX_API }: { c
       throw new Error(`PayPal POST /v1/payments/payouts answered ${res.status}: ${JSON.stringify(res.json)}`);
     },
 
-    async payoutItems(payoutBatchId) {
+    async payoutBatch(payoutBatchId) {
       const items: PayoutItemState[] = [];
+      let status = "PENDING";
       for (let page = 1, pages = 1; page <= pages; page++) {
         const json = await must("GET", `/v1/payments/payouts/${encodeURIComponent(payoutBatchId)}?page=${page}&page_size=1000&total_required=true`);
+        // With total_required, PayPal answers total_pages (checked against the sandbox).
         pages = typeof json.total_pages === "number" ? json.total_pages : 1;
+        status = String((json.batch_header as { batch_status?: unknown } | undefined)?.batch_status ?? status);
         for (const item of (json.items ?? []) as BatchItem[]) {
           const id = item.payout_item?.sender_item_id;
           const fee = item.payout_item_fee?.currency === "USD" ? centsOf(item.payout_item_fee.value) : 0;
@@ -204,7 +215,7 @@ export function paypalRest({ clientId, clientSecret, apiUrl = SANDBOX_API }: { c
           items.push({ senderItemId: id, payoutItemId: item.payout_item_id, status: item.transaction_status as PayoutItemStatus, feeCents: fee ?? 0 });
         }
       }
-      return items;
+      return { status: status as PayoutBatchStatus, items };
     },
   };
 }
@@ -228,9 +239,11 @@ export type FakePayPal = PayPal & {
   payouts: (PayoutBatch & { payoutBatchId: string })[];
   // PayPal moves the latest payout to the Project to this status.
   finish(project: string, status: PayoutItemStatus): void;
-  // How many times PlayCount has read a batch's items back.
-  itemReads: number;
-  // The next payoutItems fails.
+  // PayPal rejects the whole batch: it is DENIED and lists no items.
+  deny(payoutBatchId: string): void;
+  // How many times PlayCount has read a batch back.
+  batchReads: number;
+  // The next payoutBatch fails.
   failNextRead(): void;
   // The next sendPayouts fails before PayPal takes the batch.
   failNext(): void;
@@ -247,6 +260,7 @@ export function fakePayPal({ activateLater = false } = {}): FakePayPal {
   const statuses = new Map<string, PayoutItemStatus>();
   let next: "fail" | "lose" | undefined;
   let failRead = false;
+  const denied = new Set<string>();
   const find = (id: string) => created.find((s) => s.id === id);
   const set = (id: string, status: SubscriptionStatus) => {
     const sub = find(id);
@@ -279,26 +293,29 @@ export function fakePayPal({ activateLater = false } = {}): FakePayPal {
       if (mishap === "lose") throw new Error("PayPal's answer was lost");
       return { payoutBatchId: sent.payoutBatchId };
     },
-    async payoutItems(payoutBatchId) {
-      fake.itemReads++;
+    async payoutBatch(payoutBatchId) {
+      fake.batchReads++;
       if (failRead) {
         failRead = false;
         throw new Error("PayPal is unreachable");
       }
+      if (denied.has(payoutBatchId)) return { status: "DENIED", items: [] };
       const batch = payouts.find((p) => p.payoutBatchId === payoutBatchId);
-      return (batch?.items ?? []).map((_, i) => {
+      const items = (batch?.items ?? []).map((_, i) => {
         const id = senderItemId(batch!.senderBatchId, i);
         const status = statuses.get(id) ?? "PENDING";
         // As in the sandbox: no fee for a FAILED item, a RETURNED one keeps it.
         return { senderItemId: id, payoutItemId: `FAKEITEM-${id}`, status, feeCents: status === "FAILED" ? 0 : 25 };
       });
+      return { status: items.every((i) => i.status !== "PENDING") ? "SUCCESS" : "PROCESSING", items };
     },
+    deny: (payoutBatchId) => void denied.add(payoutBatchId),
     finish(project, status) {
       const batch = payouts.findLast((p) => p.items.some((i) => i.project === project));
       if (!batch) throw new Error(`no payout to ${project} was sent`);
       statuses.set(senderItemId(batch.senderBatchId, batch.items.findIndex((i) => i.project === project)), status);
     },
-    itemReads: 0,
+    batchReads: 0,
     failNextRead: () => void (failRead = true),
     failNext: () => void (next = "fail"),
     loseNextAnswer: () => void (next = "lose"),
