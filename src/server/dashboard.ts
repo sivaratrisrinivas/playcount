@@ -80,7 +80,9 @@ function budgetSection(budget: Budget | undefined, budgetForm: boolean) {
   if (budget) {
     const source = budget.subscriptionId
       ? html`PayPal Subscription <code>${budget.subscriptionId}</code>, active since ${budget.since.slice(0, 10)}`
-      : html`a seeded demo Budget, not charged through PayPal`;
+      : budget.simulated
+        ? html`a simulated Developer's Budget, not charged through PayPal`
+        : html`a seeded demo Budget, not charged through PayPal`;
     return html`<section id="budget">
       <h2>Budget</h2>
       <p><strong id="budget-amount">${dollars(budget.amountCents)}</strong> a month, split among the projects your Agent plays. <span class="hint">${source}</span></p>
@@ -165,7 +167,7 @@ function weightingSection(statement: Statement, weighting: Weighting | undefined
   const readOnly = sharesTable((s) => `${s.share}%`);
 
   if (weighting.status === "approved") {
-    const by = weighting.approved_by === "auto" ? "Auto-approved" : "Approved by the Developer";
+    const by = { auto: "Auto-approved", simulated: "Approved for a simulated Developer", developer: "Approved by the Developer" }[weighting.approved_by ?? "developer"];
     return section(html`
       <p class="note"><strong>${by}</strong> on ${day(weighting.approved_at ?? "")}. ${source}${adjusted}. It is locked for this period.</p>
       ${readOnly}`);
@@ -193,6 +195,7 @@ const STATUS: Record<RoyaltyStatus, string> = {
   sent: "Sent via PayPal",
   "unclaimed-held": "Unclaimed, held",
   "rolled-over": "Rolled over",
+  simulated: "Simulated, no money sent",
 };
 
 const settleForm = (period: string, label: string, enabled = true) =>
