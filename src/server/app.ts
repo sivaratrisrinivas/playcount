@@ -12,6 +12,8 @@ import type { GitHub } from "./github.ts";
 import type { Ledger } from "./ledger.ts";
 import { dashboardPage, landingPage, playRow } from "./dashboard.ts";
 import { isPeriod, periodOf, statementOf } from "./statement.ts";
+import type { Weigher } from "./weigher.ts";
+import { weightings as weightingsOf, type WeightingResult } from "./weighting.ts";
 
 export type AppDeps = {
   ledger: Ledger;
@@ -23,7 +25,9 @@ export type AppDeps = {
   // The address Developers reach this service at, e.g. https://playcount.onrender.com.
   // Behind a proxy the request's own URL can say http, so this is configured.
   publicUrl?: string;
-  // Decides the current period; tests pass a fixed one.
+  // Claude, for proposing Weightings; without it, Weightings are proposed from Play counts.
+  weigher?: Weigher;
+  // Decides the current period and when Weightings auto-approve; tests pass a controllable one.
   clock?: () => Date;
 };
 
@@ -57,8 +61,9 @@ const token = () => randomBytes(24).toString("base64url");
 export const installCommand = (url: string, key: string) =>
   `curl -fsSL ${url}/install.ts | node --input-type=module-typescript - ${url} ${key}`;
 
-export function createApp({ ledger, developers, demoDeveloperId, github, publicUrl, clock = () => new Date() }: AppDeps) {
+export function createApp({ ledger, developers, demoDeveloperId, github, publicUrl, weigher, clock = () => new Date() }: AppDeps) {
   const app = new Hono();
+  const weightings = weightingsOf({ ledger, weigher, clock });
   // Names this service run in stream cursors, so a browser's cursor from an earlier run is spotted.
   const run = (Date.now() + Math.random()).toString(36).replace(".", "");
   const cursor = (count: number) => `${run}.${count}`;
@@ -199,6 +204,60 @@ export function createApp({ ledger, developers, demoDeveloperId, github, publicU
     return c.json(statementOf(ledger.playsOf(developer.id), period));
   });
 
+  // The Developer's Weighting for a period (?period=YYYY-MM, default the current one).
+  const withPeriod = async (
+    c: Context,
+    then: (developer: Developer, period: string) => WeightingResult | Promise<WeightingResult>,
+    okStatus: 200 | 201 = 200,
+  ) => {
+    const developer = developerOf(c);
+    if (!developer) return c.json({ error: "unknown PlayCount key" }, 401);
+    const period = c.req.query("period") ?? periodOf(clock());
+    if (!isPeriod(period)) return c.json({ error: "period must be a month written YYYY-MM" }, 400);
+    const result = await then(developer, period);
+    return result.ok ? c.json(result.weighting, okStatus) : c.json({ error: result.error }, result.status);
+  };
+  app.get("/api/weighting", (c) =>
+    withPeriod(c, (developer, period) => {
+      const weighting = weightings.current(developer.id, period);
+      return weighting ? { ok: true, weighting } : { ok: false, status: 404, error: "no Weighting proposed for this period" };
+    }),
+  );
+  app.post("/api/weighting/propose", (c) => withPeriod(c, (developer, period) => weightings.propose(developer.id, period), 201));
+  app.put("/api/weighting", (c) =>
+    withPeriod(c, async (developer, period) => {
+      const body = await c.req.json().catch(() => null);
+      return weightings.adjust(developer.id, period, body?.shares);
+    }),
+  );
+  app.post("/api/weighting/approve", (c) => withPeriod(c, (developer, period) => weightings.approve(developer.id, period)));
+
+  // The dashboard's Weighting forms act for whoever's dashboard this browser sees, which for a
+  // visitor who has not signed in is the demo Developer. The session cookie is SameSite=Lax, so
+  // another site cannot post these as a signed-in Developer.
+  type Form = Record<string, string | File | (string | File)[]>;
+  const weightingForm = async (c: Context, then: (developerId: string, period: string, form: Form) => WeightingResult | Promise<WeightingResult>) => {
+    const viewer = viewerOf(c);
+    if (!viewer) return c.text("Sign in to change your Weighting.", 401);
+    const form = await c.req.parseBody({ all: true });
+    const period = typeof form.period === "string" ? form.period : periodOf(clock());
+    if (!isPeriod(period)) return c.text("The period must be a month written YYYY-MM.", 400);
+    const result = await then(viewer.id, period, form);
+    return result.ok ? c.redirect("/#weighting", 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
+  };
+  const list = (value: unknown) => (Array.isArray(value) ? value : value === undefined ? [] : [value]);
+  app.post("/weighting/propose", (c) => weightingForm(c, (id, period) => weightings.propose(id, period)));
+  app.post("/weighting/adjust", (c) =>
+    weightingForm(c, (id, period, form) => {
+      const projects = list(form.project);
+      const shares = list(form.share);
+      if (projects.length !== shares.length) return { ok: false, status: 400, error: "each Project needs a share" };
+      const parsed = projects.map((project, i) => ({ project, share: shares[i] === "" ? NaN : Number(shares[i]) }));
+      return weightings.adjust(id, period, parsed);
+    }),
+  );
+  app.post("/weighting/approve", (c) => weightingForm(c, (id, period) => weightings.approve(id, period)));
+
   // Render polls this before switching traffic to a new deploy.
   app.get("/health", (c) => c.json({ status: "ok" }));
 
@@ -209,8 +268,9 @@ export function createApp({ ledger, developers, demoDeveloperId, github, publicU
     if (!viewer) return c.html(landingPage(signIn));
     const plays = ledger.playsOf(viewer.id).reverse();
     const statement = statementOf(plays, periodOf(clock()));
+    const weighting = weightings.current(viewer.id, statement.period);
     const setup = developer && { key: developer.key, installCommand: installCommand(baseUrl(c), developer.key) };
-    return c.html(dashboardPage({ name: viewer.name, plays, statement, cursor: cursor(plays.length), setup, signIn }));
+    return c.html(dashboardPage({ name: viewer.name, plays, statement, weighting, cursor: cursor(plays.length), setup, signIn }));
   });
 
   const serveSource = async (c: Context, file: string) =>
