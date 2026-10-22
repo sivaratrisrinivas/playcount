@@ -35,6 +35,9 @@ export type AppDeps = {
   weigher?: Weigher;
   // Decides the current period and when Weightings auto-approve; tests pass a controllable one.
   clock?: () => Date;
+  // How often payouts PayPal has not finished are read back into the Ledger; without it, only
+  // POST /api/reconcile and the dashboard's "Check PayPal now" read them.
+  reconcileEveryMs?: number;
 };
 
 // Keeps idle live streams open through proxies that drop silent connections.
@@ -75,10 +78,21 @@ export function budgetCents(amount: unknown) {
 export const installCommand = (url: string, key: string) =>
   `curl -fsSL ${url}/install.ts | node --input-type=module-typescript - ${url} ${key}`;
 
-export function createApp({ ledger, developers, demoDeveloperId, github, paypal, publicUrl, weigher, clock = () => new Date() }: AppDeps) {
+export function createApp({ ledger, developers, demoDeveloperId, github, paypal, publicUrl, weigher, clock = () => new Date(), reconcileEveryMs }: AppDeps) {
   const app = new Hono();
   const weightings = weightingService({ ledger, weigher, clock });
   const settlements = settlementService({ ledger, currentWeighting: weightings.current, paypal, clock });
+  let reconcilingAll = false;
+  const reconciler =
+    reconcileEveryMs &&
+    setInterval(() => {
+      if (reconcilingAll) return;
+      reconcilingAll = true;
+      settlements
+        .reconcileAll()
+        .catch((err) => console.error("Payout reconciliation failed:", err))
+        .finally(() => (reconcilingAll = false));
+    }, reconcileEveryMs).unref();
   // Names this service run in stream cursors, so a browser's cursor from an earlier run is spotted.
   const run = (Date.now() + Math.random()).toString(36).replace(".", "");
   const cursor = (count: number) => `${run}.${count}`;
@@ -339,6 +353,17 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     return result.ok ? c.json(publicSettlement(result.settlement)) : c.json({ error: result.error }, result.status);
   });
 
+  // Reads the period's payout statuses back from PayPal into the Ledger; changes nothing once
+  // they are all final.
+  app.post("/api/reconcile", async (c) => {
+    const developer = developerOf(c);
+    if (!developer) return c.json({ error: "unknown PlayCount key" }, 401);
+    const period = c.req.query("period") ?? periodOf(clock());
+    if (!isPeriod(period)) return c.json({ error: "period must be a month written YYYY-MM" }, 400);
+    const result = await settlements.reconcile(developer.id, period);
+    return result.ok ? c.json(publicSettlement(result.settlement)) : c.json({ error: result.error }, result.status);
+  });
+
   // The dashboard's "Settle now" button, for the signed-in Developer only, like the Weighting forms.
   app.post("/settle", async (c) => {
     const developer = signedIn(c);
@@ -347,6 +372,16 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     const period = typeof form.period === "string" ? form.period : periodOf(clock());
     if (!isPeriod(period)) return c.text("The period must be a month written YYYY-MM.", 400);
     const result = await settlements.settle(developer.id, period);
+    return result.ok ? c.redirect("/#settlement", 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
+  });
+  // The dashboard's "Check PayPal now" button, while payouts are still with PayPal.
+  app.post("/reconcile", async (c) => {
+    const developer = signedIn(c);
+    if (!developer) return c.text("Sign in to check your payouts.", 401);
+    const form = await c.req.parseBody();
+    const period = typeof form.period === "string" ? form.period : periodOf(clock());
+    if (!isPeriod(period)) return c.text("The period must be a month written YYYY-MM.", 400);
+    const result = await settlements.reconcile(developer.id, period);
     return result.ok ? c.redirect("/#settlement", 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
   });
 
@@ -402,5 +437,5 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     return c.body(await agGrid, 200, { "content-type": "text/javascript; charset=utf-8" });
   });
 
-  return app;
+  return { app, close: () => reconciler && clearInterval(reconciler) };
 }

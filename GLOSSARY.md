@@ -26,6 +26,7 @@ _Avoid_: Tip, share, payout (a payout is the transfer that delivers a royalty)
 **Unclaimed royalty**:
 A royalty owed to a project that has no payout address yet; it stays in the pool until the project is claimed.
 _Avoid_: Pending payout, escrowed funds
+A royalty whose payout PayPal fails or returns is held in the pool for its project the same way, never lost.
 
 **Rollover**:
 A royalty under $1, or a budget whose agent made no plays that month, carried into the developer's next settlement instead of being paid.
@@ -34,6 +35,10 @@ _Avoid_: Carry-forward, remainder
 **Ledger**:
 PlayCount's record of every Play, Budget, Weighting, Royalty and payout; the Pool is derived from it, never kept as a separate balance.
 _Avoid_: Database, books, account
+
+**Reconciliation**:
+Reading each payout's status back from PayPal after a settlement until every one is final (paid, failed or returned), so the Ledger shows what actually happened.
+_Avoid_: Sync, status check
 
 **Period**:
 The calendar month (UTC) whose plays one settlement covers, written YYYY-MM.

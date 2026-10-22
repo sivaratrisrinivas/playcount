@@ -62,6 +62,8 @@ const server = await startServer({
   weigher,
   // Render sets RENDER_EXTERNAL_URL to the service's public https address.
   publicUrl: env.PLAYCOUNT_PUBLIC_URL || env.RENDER_EXTERNAL_URL,
+  // PayPal usually finishes a payout within a minute, so its statuses are read back this often.
+  reconcileEveryMs: 30_000,
   port: Number(env.PORT ?? 3000),
 });
 console.log(`PlayCount listening on ${server.url}`);

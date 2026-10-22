@@ -136,6 +136,7 @@ ${head()}
 }
 
 const day = (iso: string) => iso.slice(0, 10);
+const time = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 
 const proposeForm = (period: string, label: string) =>
   html`<form method="post" action="/weighting/propose"><input type="hidden" name="period" value="${period}"><button type="submit">${label}</button></form>`;
@@ -191,16 +192,21 @@ function weightingSection(statement: Statement, weighting: Weighting | undefined
 const STATUS: Record<RoyaltyStatus, string> = {
   sending: "Sending",
   sent: "Sent via PayPal",
+  paid: "Paid",
+  "returned-held": "Returned by PayPal, held",
   "unclaimed-held": "Unclaimed, held",
   "rolled-over": "Rolled over",
 };
+
+const reconcileForm = (period: string) =>
+  html`<form method="post" action="/reconcile"><input type="hidden" name="period" value="${period}"><button type="submit">Check PayPal now</button></form>`;
 
 const settleForm = (period: string, label: string, enabled = true) =>
   html`<form method="post" action="/settle"><input type="hidden" name="period" value="${period}"><button type="submit" class="primary"${enabled ? "" : " disabled"}>${label}</button></form>`;
 
 // Where every cent of the period's spendable amount went: each Royalty and its status, the PayPal
 // fees paid from the Pool, and what rolled over. Before the period is settled, the signed-in
-// Developer gets the "Settle now" button.
+// Developer gets the "Settle now" button; while PayPal is still processing payouts, "Check PayPal now".
 function settlementSection(statement: Statement, weighting: Weighting | undefined, settlement: PublicSettlement | undefined, budget: Budget | undefined, canSettle: boolean) {
   const { period } = statement;
   const section = (body: unknown) => html`<section id="settlement"><h2>Settlement for ${period}</h2>${body}</section>`;
@@ -224,12 +230,19 @@ function settlementSection(statement: Statement, weighting: Weighting | undefine
         : html`Sending the payouts to PayPal…`;
   const rollover = s.rollover_in_cents ? html` + ${dollars(s.rollover_in_cents)} rolled over` : "";
   const fees = s.payouts === 1 ? "1 payout" : `${s.payouts} payouts`;
+  const processing = s.status === "settled" ? s.royalties.filter((r) => r.status === "sent").length : 0;
+  const checked = s.reconciled_at ? html` Last checked with PayPal at ${time(s.reconciled_at)}.` : "";
+  const progress = processing
+    ? html`<p class="note" id="settlement-payouts">PayPal is still processing ${processing === 1 ? "1 payout" : `${processing} payouts`}; PlayCount checks again shortly.${checked}</p>`
+    : s.reconciled_at
+      ? html`<p class="note" id="settlement-payouts">PayPal has finished every payout.${checked}</p>`
+      : "";
   return section(html`
       <p class="note">${note}</p>
       <table>
         <thead><tr><th>Project</th><th class="num">Share</th><th class="num">Royalty</th><th>Status</th></tr></thead>
         <tbody>${s.royalties.map(
-          (r) => html`<tr data-project="${r.project}" data-status="${r.status}"><td>${r.project}</td><td class="num">${r.share}%</td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}">${STATUS[r.status]}</span></td></tr>`,
+          (r) => html`<tr data-project="${r.project}" data-status="${r.status}"><td>${r.project}</td><td class="num">${r.share}%</td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}"${r.payout ? html` title="PayPal: ${r.payout.status}"` : ""}>${STATUS[r.status]}</span>${r.payout && r.status !== "paid" ? html` <span class="hint">PayPal: ${r.payout.status}</span>` : ""}</td></tr>`,
         )}</tbody>
         <tfoot>
           <tr id="settlement-fees"><td colspan="2">PayPal fees, paid from the Pool (${fees} at ${dollars(PAYOUT_FEE_CENTS)})</td><td class="num">${dollars(s.fees_cents)}</td><td></td></tr>
@@ -237,6 +250,8 @@ function settlementSection(statement: Statement, weighting: Weighting | undefine
           <tr><th colspan="2">Spendable: ${dollars(s.budget_cents)} Budget${rollover}</th><th class="num">${dollars(s.spendable_cents)}</th><th></th></tr>
         </tfoot>
       </table>
+      ${progress}
+      ${processing && canSettle ? html`<div class="actions">${reconcileForm(period)}</div>` : ""}
       ${s.status === "payout-failed" && canSettle ? html`<div class="actions">${settleForm(period, "Retry payouts")}</div>` : ""}`);
 }
 
@@ -361,7 +376,9 @@ const STYLE = `
   #settlement .num { text-align: right; white-space: nowrap; }
   #settlement tfoot td, #settlement tfoot th { color: var(--muted); }
   .status { font-size: 13px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); white-space: nowrap; }
-  .status.sent { color: var(--accent); border-color: var(--accent); }
+  .status.sent, .status.paid { color: var(--accent); border-color: var(--accent); }
+  .status.paid { background: var(--accent); color: var(--bg); }
+  .status.returned-held { color: #c0392b; border-color: #c0392b; }
   #weighting input[type="number"] { width: 5.5em; font: inherit; padding: 2px 4px; margin-right: 2px; text-align: right; }
   #weighting .num { text-align: right; white-space: nowrap; }
   #weighting .off { color: #c0392b; font-weight: 600; }
