@@ -13,7 +13,7 @@ const envVars = envVarsOf(blueprint);
 
 it("declares the secrets the service needs", () => {
   expect(envVars.map((v) => v.key)).toEqual(
-    expect.arrayContaining(["PLAYCOUNT_DEMO_KEY", "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "ASSEMBLYAI_API_KEY", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"]),
+    expect.arrayContaining(["PLAYCOUNT_DEMO_KEY", "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "GROQ_API_KEY", "ASSEMBLYAI_API_KEY", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"]),
   );
 });
 
