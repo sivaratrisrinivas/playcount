@@ -1,10 +1,11 @@
 // Settlement: turns a Developer's approved Weighting for one period into Royalties, pays the
 // claimed Projects in one PayPal Payouts batch, holds Unclaimed royalties in the Ledger and rolls
-// Royalties under $1 over to the Developer's next Settlement. A period is settled once: settling
+// Royalties under $1 over to the Developer's next Settlement. Unclaimed royalties the Developer's
+// earlier Settlements held for a Project are paid in their first Settlement after it is claimed. A period is settled once: settling
 // it again returns the same Settlement, and a batch PayPal did not confirm is retried under the
 // same batch id, which PayPal refuses to pay twice.
 import { randomBytes } from "node:crypto";
-import type { Ledger } from "./ledger.ts";
+import type { Claim, Ledger } from "./ledger.ts";
 import type { PayoutBatch, PayoutItem, PayPal } from "./paypal.ts";
 import { periodOf, statementOf } from "./statement.ts";
 import type { Weighting } from "./weighting.ts";
@@ -19,9 +20,12 @@ const WHOLE = 10_000; // 100%, in hundredths of a percent
 // "sending" only while the Payouts batch is unconfirmed; it becomes "sent" once PayPal takes it.
 export type RoyaltyStatus = "sending" | "sent" | "unclaimed-held" | "rolled-over";
 export type Royalty = { project: string; share: number; amount_cents: number; status: RoyaltyStatus };
+// Unclaimed royalties earlier Settlements held for a Project, paid by this one now it is claimed.
+export type Release = { project: string; amount_cents: number; status: "sending" | "sent" };
 
 // All amounts are integer US cents, and every cent of the spendable amount (Budget plus the
-// Rollover carried in) is accounted for: sent + held + rolled over + fees = spendable.
+// Rollover carried in) is accounted for: sent + held + rolled over + fees = spendable. Released
+// royalties were accounted for by the Settlements that held them, so they are paid on top.
 export type Settlement = {
   id: string;
   period: string;
@@ -31,6 +35,8 @@ export type Settlement = {
   rollover_in_cents: number;
   spendable_cents: number;
   royalties: Royalty[];
+  releases: Release[];
+  released_cents: number;
   // Payout items sent, each costing one PAYOUT_FEE_CENTS.
   payouts: number;
   fees_cents: number;
@@ -69,6 +75,19 @@ function split(cents: number, hundredths: number[]): number[] {
 const sum = (royalties: Royalty[], status: RoyaltyStatus) =>
   royalties.filter((r) => r.status === status).reduce((total, r) => total + r.amount_cents, 0);
 
+// What these Settlements still hold for each Project: their Unclaimed royalties, less what
+// Settlements since have released. A release counts from the moment it is recorded, even before
+// PayPal confirms it, so a held Royalty is never paid twice.
+export function heldByProject(settlements: Settlement[]): Map<string, number> {
+  const held = new Map<string, number>();
+  const add = (project: string, cents: number) => held.set(project, (held.get(project) ?? 0) + cents);
+  for (const s of settlements) {
+    for (const r of s.royalties) if (r.status === "unclaimed-held") add(r.project, r.amount_cents);
+    for (const r of s.releases) add(r.project, -r.amount_cents);
+  }
+  return held;
+}
+
 export function settlementService({
   ledger,
   currentWeighting,
@@ -100,30 +119,52 @@ export function settlementService({
 
     const rolloverIn = rolloverOf(settled);
     const spendable = budget.amountCents + rolloverIn;
-    const royalties: Royalty[] = [];
-    const items: PayoutItem[] = [];
     // A period with no Plays needs no Weighting: the whole spendable amount rolls over.
+    let shares: { project: string; share: number; claim?: Claim }[] = [];
     if (statementOf(ledger.playsOf(developerId), period).projects.length) {
       const weighting = currentWeighting(developerId, period);
       if (weighting?.status !== "approved") {
         return fail(409, weighting ? "approve this period's Weighting before settling" : "propose and approve this period's Weighting before settling");
       }
-      const shares = weighting.shares.filter((s) => s.share > 0).map((s) => ({ ...s, claim: ledger.claimOf(s.project) }));
-      // Each claimed Project's payout fee is set aside first. If its Royalty then rolls over,
-      // so does the fee set aside for it.
-      const claimed = shares.filter((s) => s.claim).length;
-      const amounts = split(Math.max(0, spendable - claimed * PAYOUT_FEE_CENTS), shares.map((s) => Math.round(s.share * 100)));
-      shares.forEach((s, i) => {
-        const status = amounts[i] < MIN_ROYALTY_CENTS ? "rolled-over" : s.claim ? "sending" : "unclaimed-held";
-        royalties.push({ project: s.project, share: s.share, amount_cents: amounts[i], status });
-        if (status === "sending") {
-          items.push({
-            project: s.project,
-            receiver: s.claim!.payoutEmail,
-            amountCents: amounts[i],
-            note: `Developers' AI coding agents relied on ${s.project} in ${period}. This royalty comes from their PlayCount budgets.`,
-          });
-        }
+      shares = weighting.shares.filter((s) => s.share > 0).map((s) => ({ project: s.project, share: s.share, claim: ledger.claimOf(s.project) }));
+    }
+
+    // Each claimed Project's payout fee is set aside first. If its Royalty then rolls over, so
+    // does the fee set aside for it.
+    const claims = new Map(shares.flatMap((s) => (s.claim ? [[s.project, s.claim] as const] : [])));
+    // Held royalties for Projects claimed since are released. A Project paid this period too gets
+    // one payout item for both; any other needs a fee of its own, and stays held until a
+    // Settlement has enough to set that fee aside.
+    const releases: Release[] = [];
+    for (const [project, cents] of heldByProject(settled)) {
+      const claim = cents > 0 ? ledger.claimOf(project) : undefined;
+      if (!claim) continue;
+      if (!claims.has(project)) {
+        if ((claims.size + 1) * PAYOUT_FEE_CENTS > spendable) continue;
+        claims.set(project, claim);
+      }
+      releases.push({ project, amount_cents: cents, status: "sending" });
+    }
+
+    const royalties: Royalty[] = [];
+    const amounts = split(Math.max(0, spendable - claims.size * PAYOUT_FEE_CENTS), shares.map((s) => Math.round(s.share * 100)));
+    shares.forEach((s, i) => {
+      const status = amounts[i] < MIN_ROYALTY_CENTS ? "rolled-over" : s.claim ? "sending" : "unclaimed-held";
+      royalties.push({ project: s.project, share: s.share, amount_cents: amounts[i], status });
+    });
+
+    const items: PayoutItem[] = [];
+    for (const [project, claim] of claims) {
+      const royalty = royalties.find((r) => r.project === project && r.status === "sending")?.amount_cents ?? 0;
+      const released = releases.find((r) => r.project === project)?.amount_cents ?? 0;
+      if (!royalty && !released) continue;
+      const when = !released ? `in ${period}` : royalty ? `in ${period} and earlier months` : "in earlier months";
+      const held = released ? ` It includes royalties held for ${project} until it was claimed.` : "";
+      items.push({
+        project,
+        receiver: claim.payoutEmail,
+        amountCents: royalty + released,
+        note: `Developers' AI coding agents relied on ${project} ${when}. This royalty comes from their PlayCount budgets.${held}`,
       });
     }
 
@@ -141,6 +182,8 @@ export function settlementService({
       rollover_in_cents: rolloverIn,
       spendable_cents: spendable,
       royalties,
+      releases,
+      released_cents: releases.reduce((total, r) => total + r.amount_cents, 0),
       payouts: items.length,
       fees_cents: fees,
       sent_cents: sent,
@@ -159,6 +202,7 @@ export function settlementService({
         settled_at: clock().toISOString(),
         payout_batch_id,
         royalties: settlement.royalties.map((r) => (r.status === "sending" ? { ...r, status: "sent" } : r)),
+        releases: settlement.releases.map((r) => ({ ...r, status: "sent" })),
       };
       ledger.recordSettlement(developerId, done);
       return { ok: true, status: 201, settlement: done };

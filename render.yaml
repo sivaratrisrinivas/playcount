@@ -19,7 +19,7 @@ services:
         sync: false
       - key: PAYPAL_CLIENT_SECRET
         sync: false
-      # Claimed Projects seeded until maintainers can Claim, as project=payout-email pairs.
+      # Claimed Projects seeded at startup, as project=payout-email pairs; maintainers can also Claim on the site.
       - key: PLAYCOUNT_SEED_CLAIMS
         sync: false
       # The Weighting model: Groq (preferred) or AssemblyAI's LLM Gateway, not the Anthropic API.
@@ -27,7 +27,7 @@ services:
         sync: false
       - key: ASSEMBLYAI_API_KEY
         sync: false
-      # GitHub OAuth app for Developer sign-in; its callback is <service URL>/auth/github/callback.
+      # GitHub OAuth app for Developer and maintainer sign-in; its callback is <service URL>/auth/github/callback.
       - key: GITHUB_CLIENT_ID
         sync: false
       - key: GITHUB_CLIENT_SECRET
