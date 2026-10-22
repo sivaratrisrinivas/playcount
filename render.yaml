@@ -19,7 +19,7 @@ services:
         sync: false
       - key: PAYPAL_CLIENT_SECRET
         sync: false
-      # Claude is reached through AssemblyAI's LLM Gateway, not the Anthropic API.
+      # The Weighting model is reached through AssemblyAI's LLM Gateway, not the Anthropic API.
       - key: ASSEMBLYAI_API_KEY
         sync: false
       # GitHub OAuth app for Developer sign-in; its callback is <service URL>/auth/github/callback.

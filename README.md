@@ -35,6 +35,8 @@ When the agent writes or edits code that imports an npm package (`import`, `requ
 
 Only the Play log leaves your machine, never source code ([ADR 0001](docs/adr/0001-play-log-only-no-source-code.md)).
 
+From the statement, an AI model proposes a Weighting: a share of your Budget for each Project, with a one-line reason. The model sees only the statement's totals. On the dashboard (signed in) you can adjust the shares, which must add up to 100%, and approve. Approval locks the Weighting for that period, and a Weighting nobody approves auto-approves 7 days after it was first proposed. With your key, the same steps are `GET /api/weighting`, `POST /api/weighting/propose`, `PUT /api/weighting` with `{ "shares": [{ "project", "share" }] }` and `POST /api/weighting/approve`, each taking `?period=YYYY-MM`. The model is reached through AssemblyAI's LLM Gateway with `ASSEMBLYAI_API_KEY`. It defaults to `qwen3.5-4b-32k-fast`, the one model AssemblyAI's free plan can use; set `PLAYCOUNT_WEIGHER_MODEL` to another (Claude models such as `claude-sonnet-4-6` need a paid AssemblyAI account). The dashboard names the model that proposed each Weighting. Without the key, or if the model fails, the Weighting is proposed from Play counts and the dashboard says so.
+
 ## Deploy to Render
 
 [`render.yaml`](render.yaml) is a Render Blueprint. In Render, choose **New → Blueprint** and pick this repo. It deploys `main` each time CI passes and checks `/health` before switching traffic.

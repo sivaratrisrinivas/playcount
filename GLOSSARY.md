@@ -44,7 +44,7 @@ A developer's per-project totals for one period: import plays, docs plays and li
 _Avoid_: Report, invoice, bill
 
 **Weighting**:
-The share of a developer's budget each project gets in a settlement, proposed by Claude from the period's plays with a one-line reason and approved by the developer, or auto-approved after 7 days.
+The share of a developer's budget each project gets in a settlement, proposed by an AI model from the period's plays with a one-line reason and approved by the developer, or auto-approved after 7 days.
 _Avoid_: Score, ranking, split ratio
 
 ### Usage

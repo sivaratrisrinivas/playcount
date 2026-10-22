@@ -1,4 +1,5 @@
 import type { Play } from "../play.ts";
+import type { Weighting } from "./weighting.ts";
 
 // Called with each newly recorded Play and its number in the Developer's Play log (1-based).
 export type PlayListener = (play: Play, number: number) => void;
@@ -8,7 +9,7 @@ export type PlayListener = (play: Play, number: number) => void;
 export type Budget = { amountCents: number; subscriptionId?: string; since: string };
 
 // The Ledger owns everything PlayCount records about money and usage.
-// For now it holds Plays and Budgets; Weightings and Royalties arrive with later tickets.
+// For now it holds Plays, Budgets and Weightings; Royalties arrive with later tickets.
 export interface Ledger {
   recordPlays(developerId: string, plays: Play[]): void;
   playsOf(developerId: string): Play[];
@@ -18,12 +19,17 @@ export interface Ledger {
   recordBudget(developerId: string, budget: Budget): boolean;
   // The Budget Settlement draws on, if the Developer has one.
   budgetOf(developerId: string): Budget | undefined;
+  // One Weighting per Developer and period; recording one replaces the last.
+  weightingOf(developerId: string, period: string): Weighting | undefined;
+  recordWeighting(developerId: string, weighting: Weighting): void;
 }
 
 export function inMemoryLedger(): Ledger {
   const plays = new Map<string, Play[]>();
   const listeners = new Map<string, Set<PlayListener>>();
   const budgets = new Map<string, Budget>();
+  const weightings = new Map<string, Weighting>();
+  const weightingKey = (developerId: string, period: string) => `${developerId} ${period}`;
   return {
     recordPlays(developerId, batch) {
       const before = plays.get(developerId) ?? [];
@@ -49,5 +55,12 @@ export function inMemoryLedger(): Ledger {
       return true;
     },
     budgetOf: (developerId) => budgets.get(developerId),
+    weightingOf(developerId, period) {
+      const weighting = weightings.get(weightingKey(developerId, period));
+      return weighting && structuredClone(weighting);
+    },
+    recordWeighting(developerId, weighting) {
+      weightings.set(weightingKey(developerId, weighting.period), structuredClone(weighting));
+    },
   };
 }

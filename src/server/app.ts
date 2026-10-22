@@ -14,6 +14,8 @@ import { isSubscriptionId, type PayPal } from "./paypal.ts";
 import type { Ledger } from "./ledger.ts";
 import { dashboardPage, landingPage, playRow } from "./dashboard.ts";
 import { isPeriod, periodOf, statementOf } from "./statement.ts";
+import type { Weigher } from "./weigher.ts";
+import { weightingService, type WeightingResult } from "./weighting.ts";
 
 export type AppDeps = {
   ledger: Ledger;
@@ -27,7 +29,9 @@ export type AppDeps = {
   // The address Developers reach this service at, e.g. https://playcount.onrender.com.
   // Behind a proxy the request's own URL can say http, so this is configured.
   publicUrl?: string;
-  // Decides the current period; tests pass a fixed one.
+  // The AI model that proposes Weightings; without it, Weightings are proposed from Play counts.
+  weigher?: Weigher;
+  // Decides the current period and when Weightings auto-approve; tests pass a controllable one.
   clock?: () => Date;
 };
 
@@ -69,8 +73,9 @@ export function budgetCents(amount: unknown) {
 export const installCommand = (url: string, key: string) =>
   `curl -fsSL ${url}/install.ts | node --input-type=module-typescript - ${url} ${key}`;
 
-export function createApp({ ledger, developers, demoDeveloperId, github, paypal, publicUrl, clock = () => new Date() }: AppDeps) {
+export function createApp({ ledger, developers, demoDeveloperId, github, paypal, publicUrl, weigher, clock = () => new Date() }: AppDeps) {
   const app = new Hono();
+  const weightings = weightingService({ ledger, weigher, clock });
   // Names this service run in stream cursors, so a browser's cursor from an earlier run is spotted.
   const run = (Date.now() + Math.random()).toString(36).replace(".", "");
   const cursor = (count: number) => `${run}.${count}`;
@@ -263,6 +268,55 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     return c.json(statementOf(ledger.playsOf(developer.id), period));
   });
 
+  // Runs a Weighting step for the key's Developer and a period (?period=YYYY-MM, default the current one).
+  const withPeriod = async (
+    c: Context,
+    then: (developer: Developer, period: string) => WeightingResult | Promise<WeightingResult>,
+    okStatus: 200 | 201 = 200,
+  ) => {
+    const developer = developerOf(c);
+    if (!developer) return c.json({ error: "unknown PlayCount key" }, 401);
+    const period = c.req.query("period") ?? periodOf(clock());
+    if (!isPeriod(period)) return c.json({ error: "period must be a month written YYYY-MM" }, 400);
+    const result = await then(developer, period);
+    return result.ok ? c.json(result.weighting, okStatus) : c.json({ error: result.error }, result.status);
+  };
+  app.get("/api/weighting", (c) => withPeriod(c, (developer, period) => weightings.read(developer.id, period)));
+  app.post("/api/weighting/propose", (c) => withPeriod(c, (developer, period) => weightings.propose(developer.id, period), 201));
+  app.put("/api/weighting", (c) =>
+    withPeriod(c, async (developer, period) => {
+      const body = await c.req.json().catch(() => null);
+      return weightings.adjust(developer.id, period, body?.shares);
+    }),
+  );
+  app.post("/api/weighting/approve", (c) => withPeriod(c, (developer, period) => weightings.approve(developer.id, period)));
+
+  // The dashboard's Weighting forms, for the signed-in Developer only: a visitor who has not
+  // signed in sees the demo Developer's Weighting but cannot change or approve it for everyone.
+  // The session cookie is SameSite=Lax, so another site cannot post these as a signed-in Developer.
+  type Form = Record<string, string | File | (string | File)[]>;
+  const weightingForm = async (c: Context, then: (developerId: string, period: string, form: Form) => WeightingResult | Promise<WeightingResult>) => {
+    const developer = signedIn(c);
+    if (!developer) return c.text("Sign in to change your Weighting.", 401);
+    const form = await c.req.parseBody({ all: true });
+    const period = typeof form.period === "string" ? form.period : periodOf(clock());
+    if (!isPeriod(period)) return c.text("The period must be a month written YYYY-MM.", 400);
+    const result = await then(developer.id, period, form);
+    return result.ok ? c.redirect("/#weighting", 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
+  };
+  const list = (value: unknown) => (Array.isArray(value) ? value : value === undefined ? [] : [value]);
+  app.post("/weighting/propose", (c) => weightingForm(c, (id, period) => weightings.propose(id, period)));
+  app.post("/weighting/adjust", (c) =>
+    weightingForm(c, (id, period, form) => {
+      const projects = list(form.project);
+      const shares = list(form.share);
+      if (projects.length !== shares.length) return { ok: false, status: 400, error: "each Project needs a share" };
+      const parsed = projects.map((project, i) => ({ project, share: shares[i] === "" ? NaN : Number(shares[i]) }));
+      return weightings.adjust(id, period, parsed);
+    }),
+  );
+  app.post("/weighting/approve", (c) => weightingForm(c, (id, period) => weightings.approve(id, period)));
+
   // Render polls this before switching traffic to a new deploy.
   app.get("/health", (c) => c.json({ status: "ok" }));
 
@@ -273,11 +327,14 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     if (!viewer) return c.html(landingPage(signIn));
     const plays = ledger.playsOf(viewer.id).reverse();
     const statement = statementOf(plays, periodOf(clock()));
+    const weighting = weightings.current(viewer.id, statement.period);
     const setup = developer && { key: developer.key, installCommand: installCommand(baseUrl(c), developer.key) };
     const budget = ledger.budgetOf(viewer.id);
     // Only a signed-in Developer without a Budget is offered the form, and only when PayPal is set up.
     const budgetForm = Boolean(developer && paypal && !budget);
-    return c.html(dashboardPage({ name: viewer.name, plays, statement, cursor: cursor(plays.length), setup, signIn, budget, budgetForm }));
+    return c.html(
+      dashboardPage({ name: viewer.name, plays, statement, weighting, canWeigh: Boolean(developer), cursor: cursor(plays.length), setup, signIn, budget, budgetForm }),
+    );
   });
 
   const serveSource = async (c: Context, file: string) =>
