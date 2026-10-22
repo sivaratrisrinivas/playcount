@@ -19,6 +19,10 @@ A developer's budget never pays for another developer's plays. PayPal payout fee
 The monthly event that turns a period's plays into payouts to projects, in one batch.
 _Avoid_: Payment run, distribution
 
+**Monthly batch**:
+The scheduled job that settles every Developer's ended periods; it shares Settlement with "settle now", so a period is paid once whichever runs first.
+_Avoid_: Cron, payout run
+
 **Royalty**:
 The amount owed to one project from one settlement.
 _Avoid_: Tip, share, payout (a payout is the transfer that delivers a royalty)
@@ -73,6 +77,10 @@ _Avoid_: API key, token, password
 **Developer**:
 A person who funds a budget and whose coding agent produces plays.
 _Avoid_: User, customer, payer
+
+**Simulated developer**:
+A seeded stand-in for a Developer, with its own Budget and Play log, used to show Projects' totals across many Agents; it and everything its Budget pays for are labelled simulated.
+_Avoid_: Fake user, test account, bot
 
 **Agent**:
 The coding assistant (e.g. Claude Code) working on a developer's behalf whose plays are counted.

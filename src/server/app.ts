@@ -12,6 +12,7 @@ import type { GitHub } from "./github.ts";
 import { centsOf } from "./money.ts";
 import { isSubscriptionId, type PayPal } from "./paypal.ts";
 import type { Ledger } from "./ledger.ts";
+import { monthlyBatch } from "./batch.ts";
 import { dashboardPage, landingPage, playRow } from "./dashboard.ts";
 import { publicSettlement, settlementService } from "./settlement.ts";
 import { isPeriod, periodOf, statementOf } from "./statement.ts";
@@ -79,6 +80,8 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
   const app = new Hono();
   const weightings = weightingService({ ledger, weigher, clock });
   const settlements = settlementService({ ledger, currentWeighting: weightings.current, paypal, clock });
+  // Shares the services above with "settle now", so the two can never settle a period twice.
+  const batch = monthlyBatch({ ledger, developers, weightings, settle: settlements.settle, clock });
   // Names this service run in stream cursors, so a browser's cursor from an earlier run is spotted.
   const run = (Date.now() + Math.random()).toString(36).replace(".", "");
   const cursor = (count: number) => `${run}.${count}`;
@@ -402,5 +405,5 @@ export function createApp({ ledger, developers, demoDeveloperId, github, paypal,
     return c.body(await agGrid, 200, { "content-type": "text/javascript; charset=utf-8" });
   });
 
-  return app;
+  return { app, runMonthlyBatch: batch.run };
 }

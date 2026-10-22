@@ -6,8 +6,9 @@ import type { Weighting } from "./weighting.ts";
 export type PlayListener = (play: Play, number: number) => void;
 
 // What a Developer commits to pay each month, in integer US cents. A Budget funded through PayPal
-// names its Subscription; the seeded demo Developer's Budget has none.
-export type Budget = { amountCents: number; subscriptionId?: string; since: string };
+// names its Subscription; seeded Budgets (the demo Developer's and simulated Developers') have none.
+// A simulated Developer's Budget is marked, so every Settlement it pays for is labelled simulated.
+export type Budget = { amountCents: number; subscriptionId?: string; since: string; simulated?: true };
 
 // A Project's Claim: where its Royalties are paid. Until Claims (#13) arrive, Claims are seeded.
 export type Claim = { payoutEmail: string };

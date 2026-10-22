@@ -80,7 +80,9 @@ function budgetSection(budget: Budget | undefined, budgetForm: boolean) {
   if (budget) {
     const source = budget.subscriptionId
       ? html`PayPal Subscription <code>${budget.subscriptionId}</code>, active since ${budget.since.slice(0, 10)}`
-      : html`a seeded demo Budget, not charged through PayPal`;
+      : budget.simulated
+        ? html`a simulated Developer's Budget, not charged through PayPal`
+        : html`a seeded demo Budget, not charged through PayPal`;
     return html`<section id="budget">
       <h2>Budget</h2>
       <p><strong id="budget-amount">${dollars(budget.amountCents)}</strong> a month, split among the projects your Agent plays. <span class="hint">${source}</span></p>

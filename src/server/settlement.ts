@@ -38,6 +38,8 @@ export type Settlement = {
   held_cents: number;
   rolled_over_cents: number;
   payout_batch_id?: string;
+  // Set when a simulated Developer's Budget paid for it.
+  simulated?: true;
   // What is sent to PayPal, kept so a retry sends exactly the same batch.
   batch?: PayoutBatch;
 };
@@ -91,6 +93,7 @@ export function settlementService({
   function compute(developerId: string, period: string): Settlement | SettlementResult {
     const budget = ledger.budgetOf(developerId);
     if (!budget) return fail(422, "there is no Budget to settle; choose one first");
+    const simulated = budget.simulated;
     if (period > periodOf(clock())) return fail(422, "this period has not begun");
     if (period < periodOf(new Date(budget.since))) return fail(422, "your Budget began after this period");
     // Periods settle in order, so a Rollover only ever moves forward to a later period.
@@ -121,7 +124,9 @@ export function settlementService({
             project: s.project,
             receiver: s.claim!.payoutEmail,
             amountCents: amounts[i],
-            note: `Developers' AI coding agents relied on ${s.project} in ${period}. This royalty comes from their PlayCount budgets.`,
+            note: simulated
+              ? `Simulated demo data: a simulated developer's AI coding agent relied on ${s.project} in ${period}. This royalty comes from a simulated PlayCount budget.`
+              : `Developers' AI coding agents relied on ${s.project} in ${period}. This royalty comes from their PlayCount budgets.`,
           });
         }
       });
@@ -147,6 +152,7 @@ export function settlementService({
       held_cents: held,
       rolled_over_cents: spendable - sent - held - fees,
       batch: items.length ? { senderBatchId: id, items } : undefined,
+      ...(simulated && { simulated }),
     };
   }
 
