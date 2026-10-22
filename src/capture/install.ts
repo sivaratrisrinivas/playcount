@@ -32,7 +32,8 @@ function fail(message: string): never {
 
 const [url = "", key = ""] = process.argv.slice(2).map((a) => a.trim());
 if (!/^https?:\/\/[^\s/]+/.test(url)) fail("the first argument must be the PlayCount service URL, e.g. https://playcount.onrender.com");
-if (!/^pk_[\w-]+$/.test(key)) fail("the second argument must be your PlayCount key (it starts with pk_). Copy the command from your dashboard.");
+// Signed-up Developers' keys start with pk_; a seeded demo key (Render-generated) is base64.
+if (!/^[\w+/=-]{16,}$/.test(key)) fail("the second argument must be your PlayCount key. Copy the command from your dashboard.");
 const service = url.replace(/\/$/, "");
 
 const captureDir = join(homedir(), ".playcount", "capture");
