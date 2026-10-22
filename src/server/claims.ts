@@ -11,8 +11,16 @@ export const projectPath = (project: string) => `/projects/${project}`;
 
 export const isPayoutEmail = (email: string) => email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
-// What anyone may see about a Project: never its payout address.
-export type ProjectView = { project: string; held_cents: number; claimed: boolean; claimed_by?: string; claimed_at?: string };
+// What anyone may see about a Project: never its payout address. What simulated Developers'
+// Settlements hold is shown apart, since no money backs it.
+export type ProjectView = {
+  project: string;
+  held_cents: number;
+  simulated_held_cents: number;
+  claimed: boolean;
+  claimed_by?: string;
+  claimed_at?: string;
+};
 
 type ClaimError = 400 | 403 | 404 | 409 | 422 | 502 | 503;
 export type ClaimResult = { ok: true } | { ok: false; status: ClaimError; error: string };
@@ -24,8 +32,15 @@ export function claimService({ ledger, npm, github, clock }: { ledger: Ledger; n
       const claim = ledger.claimOf(project);
       // A release is shown as paid only once PayPal confirms its batch; until then it is still held.
       const settlements = ledger.allSettlements().map((s) => (s.status === "settled" ? s : { ...s, releases: [] }));
-      const held = heldByProject(settlements).get(project) ?? 0;
-      return { project, held_cents: held, claimed: Boolean(claim), claimed_by: claim?.claimedBy, claimed_at: claim?.claimedAt };
+      const heldBy = (simulated: boolean) => heldByProject(settlements.filter((s) => Boolean(s.simulated) === simulated)).get(project) ?? 0;
+      return {
+        project,
+        held_cents: heldBy(false),
+        simulated_held_cents: heldBy(true),
+        claimed: Boolean(claim),
+        claimed_by: claim?.claimedBy,
+        claimed_at: claim?.claimedAt,
+      };
     },
 
     // Claims the Project for the signed-in GitHub user, whose token checks their push access.

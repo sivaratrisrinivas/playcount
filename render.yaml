@@ -22,6 +22,9 @@ services:
       # Claimed Projects seeded at startup, as project=payout-email pairs; maintainers can also Claim on the site.
       - key: PLAYCOUNT_SEED_CLAIMS
         sync: false
+      # Simulated Developers seeded with Budgets and Plays, labelled as simulated everywhere.
+      - key: PLAYCOUNT_SIMULATED_DEVELOPERS
+        value: "5"
       # The Weighting model: Groq (preferred) or AssemblyAI's LLM Gateway, not the Anthropic API.
       - key: GROQ_API_KEY
         sync: false

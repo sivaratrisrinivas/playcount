@@ -157,7 +157,7 @@ describe("A Project's public page", () => {
     const a = heldZod(await octoberHoldsZod(ada.key));
     const b = heldZod(await octoberHoldsZod(bob.key));
 
-    expect(await view("zod")).toEqual({ project: "zod", held_cents: a + b, claimed: false });
+    expect(await view("zod")).toEqual({ project: "zod", held_cents: a + b, simulated_held_cents: 0, claimed: false });
     const page = await fetch(`${server.url}/projects/zod`);
     expect(page.status).toBe(200);
     const text = await page.text();
@@ -166,14 +166,14 @@ describe("A Project's public page", () => {
   });
 
   it("shows nothing held for a Project no Settlement held anything for, and 404s on a name that is no Project", async () => {
-    expect(await view("left-pad")).toEqual({ project: "left-pad", held_cents: 0, claimed: false });
+    expect(await view("left-pad")).toEqual({ project: "left-pad", held_cents: 0, simulated_held_cents: 0, claimed: false });
     expect((await fetch(`${server.url}/api/projects/@colin/utils`)).status).toBe(200);
     expect((await fetch(`${server.url}/api/projects/not%20a%20name`)).status).toBe(404);
   });
 
   it("never shows a claimed Project's payout email", async () => {
     const res = await fetch(`${server.url}/api/projects/hono`);
-    expect(await res.json()).toEqual({ project: "hono", held_cents: 0, claimed: true });
+    expect(await res.json()).toEqual({ project: "hono", held_cents: 0, simulated_held_cents: 0, claimed: true });
     expect(await (await fetch(`${server.url}/projects/hono`)).text()).not.toContain(HONO_EMAIL);
   });
 
@@ -364,6 +364,22 @@ describe("Paying held royalties after a Claim", () => {
     expect(await view("zod")).toMatchObject({ held_cents: bobHeld });
     expect((await settled("2026-11", bob.key)).released_cents).toBe(bobHeld);
     expect(await view("zod")).toMatchObject({ held_cents: 0 });
+  });
+
+  it("never pays a simulated Developer's held royalties: they are shown apart and released without money", async () => {
+    ledger.recordBudget(bob.id, { amountCents: 1000, since: "2026-09-01T00:00:00.000Z", simulated: true });
+    const held = heldZod(await octoberHoldsZod(bob.key));
+    expect(await view("zod")).toMatchObject({ held_cents: 0, simulated_held_cents: held });
+    expect(await (await fetch(`${server.url}/projects/zod`)).text()).toMatch(/simulated Budgets/);
+    await claim(await maintainer(), "zod");
+
+    now = new Date("2026-11-20T18:00:00.000Z");
+    const batches = paypal.payouts.length;
+    const november = await settled("2026-11", bob.key);
+    expect(november.releases).toEqual([{ project: "zod", amount_cents: held, status: "simulated" }]);
+    expect(november.fees_cents).toBe(0);
+    expect(paypal.payouts).toHaveLength(batches);
+    expect(await view("zod")).toMatchObject({ simulated_held_cents: 0 });
   });
 
   it("keeps a royalty held while it is unclaimed", async () => {

@@ -7,6 +7,9 @@
 // without either, they come from Play counts. Maintainers Claim Projects with GitHub sign-in, checked
 // against npm's registry; Claims can also be seeded from PLAYCOUNT_SEED_CLAIMS, e.g.
 // "hono=sb-xyz@personal.example.com" (comma-separated), so "settle now" can pay a sandbox account.
+// PLAYCOUNT_SIMULATED_DEVELOPERS (a count, default 0) seeds simulated Developers, labelled as such,
+// with Budgets and Plays since the start of last period. Every hour the monthly batch settles each
+// Developer's ended periods.
 import { isProjectName } from "../play.ts";
 import { budgetCents } from "./app.ts";
 import { isPayoutEmail } from "./claims.ts";
@@ -16,6 +19,7 @@ import { inMemoryLedger } from "./ledger.ts";
 import { npmRegistry } from "./npm.ts";
 import { paypalRest } from "./paypal.ts";
 import { startServer } from "./server.ts";
+import { MAX_SIMULATED, simulatedDevelopers } from "./simulated.ts";
 import { weigherFromEnv } from "./weigher.ts";
 
 const env = process.env;
@@ -55,9 +59,18 @@ for (const entry of (env.PLAYCOUNT_SEED_CLAIMS ?? "").split(",").filter((e) => e
   console.log(`Seeded a Claim: ${project} is paid through PayPal.`);
 }
 
+const simulatedCount = Number(env.PLAYCOUNT_SIMULATED_DEVELOPERS || "0");
+if (!Number.isInteger(simulatedCount) || simulatedCount < 0 || simulatedCount > MAX_SIMULATED) {
+  console.error(`PLAYCOUNT_SIMULATED_DEVELOPERS must be a whole number from 0 to ${MAX_SIMULATED}.`);
+  process.exit(1);
+}
+const simulated = simulatedDevelopers({ ledger, count: simulatedCount, now: new Date() });
+if (simulated.length) console.log(`Seeded ${simulated.length} simulated Developers with Budgets and Plays since the start of last period.`);
+
+const BATCH_EVERY_MS = 3600 * 1000;
 const server = await startServer({
   ledger,
-  developers: inMemoryDevelopers(demo ? [demo] : []),
+  developers: inMemoryDevelopers([...(demo ? [demo] : []), ...simulated]),
   demoDeveloperId: demo?.id,
   github,
   npm: npmRegistry(),
@@ -66,6 +79,8 @@ const server = await startServer({
   // Render sets RENDER_EXTERNAL_URL to the service's public https address.
   publicUrl: env.PLAYCOUNT_PUBLIC_URL || env.RENDER_EXTERNAL_URL,
   port: Number(env.PORT ?? 3000),
+  batchEveryMs: BATCH_EVERY_MS,
+  onBatch: (report) => report.forEach(({ developer, period, outcome }) => console.log(`Monthly batch: ${developer}, ${period}: ${outcome}`)),
 });
 console.log(`PlayCount listening on ${server.url}`);
 if (weigher) console.log(`Weightings are proposed by ${weigher.model}.`);

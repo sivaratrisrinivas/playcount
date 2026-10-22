@@ -69,6 +69,9 @@ export function projectPage({ view, signedInAs, signIn }: { view: ProjectView; s
   const held = view.held_cents
     ? html`<p><strong id="held">${dollars(view.held_cents)}</strong> in Unclaimed royalties is held for ${view.project}, from Developers whose coding agents relied on it.</p>`
     : html`<p id="held-none">No Unclaimed royalties are held for ${view.project} right now.</p>`;
+  const simulated = view.simulated_held_cents
+    ? html`<p class="note" id="simulated-held">Simulated Developers' agents also played it: ${dollars(view.simulated_held_cents)} is held for it from their simulated Budgets, which collect no money and are never paid out.</p>`
+    : "";
   let claim;
   if (view.claimed) {
     const by = view.claimed_by ? html` by ${view.claimed_by} on ${day(view.claimed_at ?? "")}` : "";
@@ -96,6 +99,7 @@ ${head()}
     <header><h1><a href="/">PlayCount</a></h1>${signedInAs ? html`<span class="hint">Signed in as ${signedInAs}</span>` : ""}</header>
     <h2>${view.project}</h2>
     ${held}
+    ${simulated}
     ${claim}
   </main>
 </body>
@@ -121,7 +125,9 @@ function budgetSection(budget: Budget | undefined, budgetForm: boolean) {
   if (budget) {
     const source = budget.subscriptionId
       ? html`PayPal Subscription <code>${budget.subscriptionId}</code>, active since ${budget.since.slice(0, 10)}`
-      : html`a seeded demo Budget, not charged through PayPal`;
+      : budget.simulated
+        ? html`a simulated Developer's Budget, not charged through PayPal`
+        : html`a seeded demo Budget, not charged through PayPal`;
     return html`<section id="budget">
       <h2>Budget</h2>
       <p><strong id="budget-amount">${dollars(budget.amountCents)}</strong> a month, split among the projects your Agent plays. <span class="hint">${source}</span></p>
@@ -206,7 +212,7 @@ function weightingSection(statement: Statement, weighting: Weighting | undefined
   const readOnly = sharesTable((s) => `${s.share}%`);
 
   if (weighting.status === "approved") {
-    const by = weighting.approved_by === "auto" ? "Auto-approved" : "Approved by the Developer";
+    const by = { auto: "Auto-approved", simulated: "Approved for a simulated Developer", developer: "Approved by the Developer" }[weighting.approved_by ?? "developer"];
     return section(html`
       <p class="note"><strong>${by}</strong> on ${day(weighting.approved_at ?? "")}. ${source}${adjusted}. It is locked for this period.</p>
       ${readOnly}`);
@@ -234,6 +240,7 @@ const STATUS: Record<RoyaltyStatus, string> = {
   sent: "Sent via PayPal",
   "unclaimed-held": "Unclaimed, held",
   "rolled-over": "Rolled over",
+  simulated: "Simulated, no money sent",
 };
 
 const settleForm = (period: string, label: string, enabled = true) =>

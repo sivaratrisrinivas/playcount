@@ -18,7 +18,8 @@ export type Weighting = {
   auto_approves_at: string;
   adjusted: boolean;
   approved_at?: string;
-  approved_by?: "developer" | "auto";
+  // "simulated" when the monthly batch approved it for a simulated Developer.
+  approved_by?: "developer" | "auto" | "simulated";
   shares: Share[];
 };
 
@@ -171,11 +172,11 @@ export function weightingService({ ledger, weigher, clock }: { ledger: Ledger; w
       return done(adjusted);
     },
 
-    approve(developerId: string, period: string): WeightingResult {
+    approve(developerId: string, period: string, by: "developer" | "simulated" = "developer"): WeightingResult {
       const weighting = current(developerId, period);
       if (!weighting) return fail(404, NONE);
       if (weighting.status === "approved") return fail(409, LOCKED);
-      const approved: Weighting = { ...weighting, status: "approved", approved_by: "developer", approved_at: clock().toISOString() };
+      const approved: Weighting = { ...weighting, status: "approved", approved_by: by, approved_at: clock().toISOString() };
       ledger.recordWeighting(developerId, approved);
       return done(approved);
     },
