@@ -1,4 +1,4 @@
-// Weighting: the share of a Developer's Budget each Project gets for one period. Claude proposes
+// Weighting: the share of a Developer's Budget each Project gets for one period. an AI model proposes
 // it from the period's statement, the Developer may adjust and approve it, and a proposal nobody
 // approves auto-approves 7 days later. Once approved it is locked for that period.
 import type { Ledger } from "./ledger.ts";
@@ -11,8 +11,9 @@ export type Share = { project: string; share: number; reason: string };
 export type Weighting = {
   period: string;
   status: "proposed" | "approved";
-  // "play counts" when Claude could not be reached or gave an unusable answer.
-  proposed_by: "claude" | "play counts";
+  // The model that proposed it, or "play counts" when no model could be reached or its
+  // answer was unusable.
+  proposed_by: string;
   proposed_at: string;
   auto_approves_at: string;
   adjusted: boolean;
@@ -56,7 +57,7 @@ const oneLine = (reason: string) => {
   return line.length > MAX_REASON ? `${line.slice(0, MAX_REASON - 1)}…` : line;
 };
 
-// Claude's weights are usable only if they name every played Project once, with a reason.
+// The model's weights are usable only if they name every played Project once, with a reason.
 function usable(weights: Weight[], lines: StatementLine[]): Weight[] | undefined {
   const played = new Set(lines.map((l) => l.project));
   const kept = weights.filter((w) => played.has(w.project));
@@ -112,7 +113,7 @@ export function weightingService({ ledger, weigher, clock }: { ledger: Ledger; w
     return approved;
   }
 
-  async function claudeWeights(statement: Statement): Promise<Weight[] | undefined> {
+  async function modelWeights(statement: Statement): Promise<Weight[] | undefined> {
     if (!weigher) return undefined;
     try {
       return usable(await weigher.weigh(statement), statement.projects);
@@ -135,21 +136,21 @@ export function weightingService({ ledger, weigher, clock }: { ledger: Ledger; w
       if (before?.status === "approved") return fail(409, LOCKED);
       const statement = statementOf(ledger.playsOf(developerId), period);
       if (!statement.projects.length) return fail(422, "no Plays to weigh in this period");
-      const fromClaude = await claudeWeights(statement);
-      // While Claude was weighing, the Weighting may have been adjusted, approved or proposed again.
+      const fromModel = await modelWeights(statement);
+      // While the model was weighing, the Weighting may have been adjusted, approved or proposed again.
       const after = current(developerId, period);
       if (after?.status === "approved") return fail(409, LOCKED);
-      if (JSON.stringify(after) !== JSON.stringify(before)) return fail(409, "the Weighting changed while Claude was weighing; reload and try again");
+      if (JSON.stringify(after) !== JSON.stringify(before)) return fail(409, "the Weighting changed while the model was weighing; reload and try again");
       const now = clock();
       const weighting: Weighting = {
         period,
         status: "proposed",
-        proposed_by: fromClaude ? "claude" : "play counts",
+        proposed_by: fromModel && weigher ? weigher.model : "play counts",
         proposed_at: now.toISOString(),
         // Proposing again keeps the first proposal's deadline, so auto-approval cannot be put off.
         auto_approves_at: before?.auto_approves_at ?? new Date(now.getTime() + AUTO_APPROVE_AFTER_MS).toISOString(),
         adjusted: false,
-        shares: toShares(fromClaude ?? byPlays(statement.projects)),
+        shares: toShares(fromModel ?? byPlays(statement.projects)),
       };
       ledger.recordWeighting(developerId, weighting);
       return done(weighting);

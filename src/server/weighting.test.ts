@@ -71,14 +71,14 @@ describe("Proposing a Weighting", () => {
     const res = await propose();
     expect(res.status).toBe(201);
     const weighting = await res.json();
-    expect(weighting).toMatchObject({ period: "2026-10", status: "proposed", proposed_by: "claude", proposed_at: now.toISOString() });
+    expect(weighting).toMatchObject({ period: "2026-10", status: "proposed", proposed_by: "fake-model", proposed_at: now.toISOString() });
     const shares: Share[] = weighting.shares;
     expect(shares.map((s) => s.project).sort()).toEqual(["express", "hono", "zod"]);
     expect(Math.round(shares.reduce((sum, s) => sum + s.share * 100, 0))).toBe(10000);
     for (const s of shares) expect(s.reason).toMatch(/^[^\n]+$/);
   });
 
-  it("turns Claude's weights into percentages that still sum to exactly 100%", async () => {
+  it("turns the model's weights into percentages that still sum to exactly 100%", async () => {
     weigher.respond(({ projects }) => projects.map((p) => ({ project: p.project, weight: 1, reason: `Used ${p.project}` })));
     await postPlays([play("a"), play("b"), play("c")]);
     const shares = await sharesOf(await propose());
@@ -101,7 +101,7 @@ describe("Proposing a Weighting", () => {
     expect(shares.map((s) => s.project)).toEqual(["zod"]);
   });
 
-  it("falls back to a Weighting by Plays when Claude cannot be reached, and says so", async () => {
+  it("falls back to a Weighting by Plays when the model cannot be reached, and says so", async () => {
     weigher.respond(() => {
       throw new Error("gateway down");
     });
@@ -116,7 +116,7 @@ describe("Proposing a Weighting", () => {
     ]);
   });
 
-  it("falls back when Claude's answer leaves out a played Project", async () => {
+  it("falls back when the model's answer leaves out a played Project", async () => {
     weigher.respond(() => [{ project: "zod", weight: 1, reason: "Core" }]);
     await postPlays([play("zod"), play("express")]);
     const weighting = await (await propose()).json();
@@ -189,7 +189,7 @@ describe("Adjusting a Weighting", () => {
     await propose();
   });
 
-  it("replaces the shares and keeps Claude's reasons", async () => {
+  it("replaces the shares and keeps the model's reasons", async () => {
     const before = await sharesOf(await getWeighting());
     const res = await adjust([{ project: "zod", share: 72.5 }, { project: "express", share: 27.5 }]);
     expect(res.status).toBe(200);
@@ -224,7 +224,7 @@ describe("Adjusting a Weighting", () => {
     expect((await adjust([{ project: "zod", share: 100 }], "?period=2026-09")).status).toBe(404);
   });
 
-  it("is not lost to a proposal Claude was still weighing when it was saved", async () => {
+  it("is not lost to a proposal the model was still weighing when it was saved", async () => {
     let release = () => {};
     weigher.respond(async ({ projects }) => {
       await new Promise<void>((resolve) => (release = resolve));
@@ -368,14 +368,14 @@ describe("Dashboard Weighting", () => {
     expect(await res.text()).toMatch(/100%/);
   });
 
-  it("says when the proposal came from Play counts because Claude was unavailable", async () => {
+  it("says when the proposal came from Play counts because the model was unavailable", async () => {
     weigher.respond(() => {
       throw new Error("down");
     });
     const grace = await signedInBrowser();
     await postPlays([play("zod")], grace.key);
     await grace.form("/weighting/propose", [["period", "2026-10"]]);
-    expect(await grace.page()).toContain("Claude was unavailable");
+    expect(await grace.page()).toContain("the AI model was unavailable");
   });
 
   it("shows a visitor who has not signed in the demo Developer's Weighting, read-only", async () => {

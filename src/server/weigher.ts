@@ -1,4 +1,4 @@
-// The Weigher adapter: Claude, reached through AssemblyAI's LLM Gateway. It sees a period's
+// The Weigher adapter: an AI model reached through AssemblyAI's LLM Gateway. It sees a period's
 // statement, which holds Play-log fields only (ADR 0001); tests use the fake.
 import type { StatementLine } from "./statement.ts";
 
@@ -7,6 +7,8 @@ export type WeigherInput = { period: string; projects: StatementLine[] };
 export type Weight = { project: string; weight: number; reason: string };
 
 export interface Weigher {
+  // The model that weighs, shown on the dashboard as the Weighting's proposer.
+  model: string;
   weigh(input: WeigherInput): Promise<Weight[]>;
 }
 
@@ -29,6 +31,7 @@ export const weigherPrompt = ({ period, projects }: WeigherInput) =>
 
 export function llmGatewayWeigher({ apiKey, model, fetch: fetchFn = fetch }: { apiKey: string; model: string; fetch?: typeof fetch }): Weigher {
   return {
+    model,
     async weigh(input) {
       const res = await fetchFn(GATEWAY, {
         method: "POST",
@@ -53,11 +56,11 @@ export function llmGatewayWeigher({ apiKey, model, fetch: fetchFn = fetch }: { a
   };
 }
 
-// Reads Claude's answer, tolerating a code fence or a sentence around the JSON.
+// Reads the model's answer, tolerating a code fence or a sentence around the JSON.
 function parseWeights(content: string): Weight[] {
   const json = content.slice(content.indexOf("{"), content.lastIndexOf("}") + 1);
   const weights = (JSON.parse(json) as { weights?: unknown }).weights;
-  if (!Array.isArray(weights)) throw new Error("Claude's answer has no weights");
+  if (!Array.isArray(weights)) throw new Error("the model's answer has no weights");
   return weights.map((w) => ({ project: String(w?.project), weight: Number(w?.weight), reason: String(w?.reason ?? "") }));
 }
 
@@ -71,6 +74,7 @@ export function fakeWeigher() {
       reason: `Relied on ${p.project}`,
     }));
   return {
+    model: "fake-model",
     calls,
     respond(next: (input: WeigherInput) => Weight[] | Promise<Weight[]>) {
       answer = next;

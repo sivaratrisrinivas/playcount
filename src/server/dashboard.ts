@@ -107,7 +107,7 @@ const day = (iso: string) => iso.slice(0, 10);
 const proposeForm = (period: string, label: string) =>
   html`<form method="post" action="/weighting/propose"><input type="hidden" name="period" value="${period}"><button type="submit">${label}</button></form>`;
 
-// Claude's proposed split of the Budget for the period, with a reason per Project. While it is
+// The AI model's proposed split of the Budget for the period, with a reason per Project. While it is
 // a proposal the signed-in Developer can adjust the shares and approve it; once approved it is
 // locked. A visitor who has not signed in sees it read-only.
 function weightingSection(statement: Statement, weighting: Weighting | undefined, canWeigh: boolean) {
@@ -116,13 +116,13 @@ function weightingSection(statement: Statement, weighting: Weighting | undefined
   if (!weighting) {
     if (!statement.projects.length || !canWeigh) return "";
     return section(html`
-      <p>Claude reads this period's Play log (never your code) and proposes how to split your Budget among these Projects, with a reason for each. You can adjust the shares before approving.</p>
+      <p>An AI model reads this period's Play log (never your code) and proposes how to split your Budget among these Projects, with a reason for each. You can adjust the shares before approving.</p>
       ${proposeForm(period, "Propose Weighting")}`);
   }
   const source =
-    weighting.proposed_by === "claude"
-      ? html`Proposed by Claude on ${day(weighting.proposed_at)}`
-      : html`Proposed from Play counts on ${day(weighting.proposed_at)}, because Claude was unavailable`;
+    weighting.proposed_by === "play counts"
+      ? html`Proposed from Play counts on ${day(weighting.proposed_at)}, because the AI model was unavailable`
+      : html`Proposed by ${weighting.proposed_by} on ${day(weighting.proposed_at)}`;
   const adjusted = weighting.adjusted ? ", then adjusted" : "";
   const sharesTable = (shareCell: (s: Share) => unknown, foot: unknown = "") => html`<table>
         <thead><tr><th>Project</th><th class="num">Share</th><th>Reason</th></tr></thead>

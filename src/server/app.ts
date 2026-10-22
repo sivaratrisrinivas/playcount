@@ -25,7 +25,7 @@ export type AppDeps = {
   // The address Developers reach this service at, e.g. https://playcount.onrender.com.
   // Behind a proxy the request's own URL can say http, so this is configured.
   publicUrl?: string;
-  // Claude, for proposing Weightings; without it, Weightings are proposed from Play counts.
+  // The AI model that proposes Weightings; without it, Weightings are proposed from Play counts.
   weigher?: Weigher;
   // Decides the current period and when Weightings auto-approve; tests pass a controllable one.
   clock?: () => Date;

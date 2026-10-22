@@ -1,6 +1,6 @@
 // Starts the PlayCount service. Developers sign up with GitHub when GITHUB_CLIENT_ID and
 // GITHUB_CLIENT_SECRET are set. A demo Developer can also be seeded from PLAYCOUNT_DEMO_KEY;
-// visitors who have not signed in see their dashboard. With ASSEMBLYAI_API_KEY set, Claude
+// visitors who have not signed in see their dashboard. With ASSEMBLYAI_API_KEY set, an AI model
 // proposes Weightings through AssemblyAI's LLM Gateway; without it, they come from Play counts.
 import { inMemoryDevelopers, type Developer } from "./developers.ts";
 import { githubOAuth } from "./github.ts";
@@ -16,8 +16,11 @@ const github =
   env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET
     ? githubOAuth({ clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET })
     : undefined;
+// The free-plan AssemblyAI account can use only this model (checked Oct 22, 2026); Claude models
+// such as claude-sonnet-4-6 need a paid account. PLAYCOUNT_WEIGHER_MODEL picks another.
+const DEFAULT_WEIGHER_MODEL = "qwen3.5-4b-32k-fast";
 const weigher = env.ASSEMBLYAI_API_KEY
-  ? llmGatewayWeigher({ apiKey: env.ASSEMBLYAI_API_KEY, model: env.PLAYCOUNT_WEIGHER_MODEL || "claude-sonnet-4-6" })
+  ? llmGatewayWeigher({ apiKey: env.ASSEMBLYAI_API_KEY, model: env.PLAYCOUNT_WEIGHER_MODEL || DEFAULT_WEIGHER_MODEL })
   : undefined;
 if (!demo && !github) {
   console.error("Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET for sign-up, or PLAYCOUNT_DEMO_KEY to seed a demo Developer.");
@@ -35,5 +38,6 @@ const server = await startServer({
   port: Number(env.PORT ?? 3000),
 });
 console.log(`PlayCount listening on ${server.url}`);
+if (weigher) console.log(`Weightings are proposed by ${weigher.model}.`);
 if (!github) console.log("GitHub sign-in is off: GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are not set.");
-if (!weigher) console.log("Claude Weighting is off: ASSEMBLYAI_API_KEY is not set, so Weightings come from Play counts.");
+if (!weigher) console.log("AI Weighting is off: ASSEMBLYAI_API_KEY is not set, so Weightings come from Play counts.");
