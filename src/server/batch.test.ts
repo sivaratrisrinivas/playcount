@@ -188,7 +188,7 @@ describe("The monthly batch", () => {
 describe("Simulated Developers", () => {
   const seeded = () => simulatedDevelopers({ ledger, count: 4, now });
 
-  it("are seeded with Budgets and realistic Plays this period", () => {
+  it("are seeded with Budgets and realistic Plays since the start of last period", () => {
     const sims = seeded();
     expect(sims).toHaveLength(4);
     expect(new Set(sims.map((d) => d.id)).size).toBe(4);
@@ -197,7 +197,8 @@ describe("Simulated Developers", () => {
       expect(budget?.amountCents).toBeGreaterThanOrEqual(100);
       const plays = ledger.playsOf(dev.id);
       expect(plays.length).toBeGreaterThan(10);
-      expect(plays.every((p) => p.at.startsWith("2026-10") && Date.parse(p.at) <= now.getTime())).toBe(true);
+      expect(plays.every((p) => p.at >= "2026-09-01" && Date.parse(p.at) <= now.getTime())).toBe(true);
+      expect(plays.some((p) => p.at.startsWith("2026-09")) && plays.some((p) => p.at.startsWith("2026-10"))).toBe(true);
       expect(plays.some((p) => p.kind === "import") && plays.some((p) => p.kind === "docs")).toBe(true);
       expect(new Set(plays.map((p) => p.project)).size).toBeGreaterThan(2);
       // In the order they were played, like a real Agent's Play log.
@@ -216,19 +217,35 @@ describe("Simulated Developers", () => {
     }
   });
 
-  it("are settled by the monthly batch, labelled as simulated wherever their money appears", async () => {
+  it("are settled by the monthly batch as soon as the service starts, labelled as simulated", async () => {
     const sims = seeded();
     await start(sims);
 
-    now = new Date("2026-11-01T00:30:00.000Z");
     await server!.runMonthlyBatch();
     for (const dev of sims) {
-      const s = await settlement(dev.key);
+      const s = await settlement(dev.key, "2026-09");
       expect(s).toMatchObject({ status: "settled", simulated: true });
+      // hono is the one claimed Project here, so its Royalty is the simulated amount.
+      expect(s.simulated_cents).toBe(s.royalties.find((r: { project: string; status: string }) => r.project === "hono" && r.status === "simulated")?.amount_cents ?? 0);
+      expect(s.sent_cents + s.held_cents + s.rolled_over_cents + s.fees_cents + s.simulated_cents).toBe(s.spendable_cents);
+      const weighting = await (await api("/api/weighting?period=2026-09", dev.key)).json();
+      expect(weighting).toMatchObject({ status: "approved", approved_by: "simulated" });
+      // The period still under way is left alone.
+      expect(await settlement(dev.key)).toBeUndefined();
     }
-    // The payout note a maintainer reads says the Royalty came from a simulated Developer.
-    expect(paypal.payouts.length).toBeGreaterThan(0);
-    for (const item of paypal.payouts.flatMap((b) => b.items)) expect(item.note).toMatch(/simulated/i);
+  });
+
+  it("never send money: a simulated Budget collects none, so its claimed Royalties are only recorded", async () => {
+    const sims = seeded();
+    await start(sims);
+
+    await server!.runMonthlyBatch();
+    expect(paypal.payouts).toEqual([]);
+    const hono = (await Promise.all(sims.map((d) => settlement(d.key, "2026-09"))))
+      .flatMap((s) => s.royalties)
+      .filter((r: { project: string }) => r.project === "hono");
+    expect(hono.length).toBeGreaterThan(1);
+    for (const r of hono) expect(r.status).toBe("simulated");
   });
 
   it("each pay only for their own Plays", async () => {
@@ -239,7 +256,7 @@ describe("Simulated Developers", () => {
     await server!.runMonthlyBatch();
     for (const dev of sims) {
       const s = await settlement(dev.key);
-      const played = new Set(ledger.playsOf(dev.id).map((p) => p.project));
+      const played = new Set(ledger.playsOf(dev.id).filter((p) => p.at.startsWith("2026-10")).map((p) => p.project));
       expect(s.budget_cents).toBe(ledger.budgetOf(dev.id)!.amountCents);
       expect(s.royalties.map((r: { project: string }) => r.project).sort()).toEqual([...played].sort());
     }
@@ -252,6 +269,6 @@ describe("Simulated Developers", () => {
     await approve(ada.key);
     expect((await api("/api/settle", ada.key, { method: "POST" })).status).toBe(201);
     expect((await settlement(ada.key)).simulated).toBeUndefined();
-    expect(paypal.payouts[0].items[0].note).not.toMatch(/simulated/i);
+    expect((await settlement(ada.key)).royalties[0].status).toBe("sent");
   });
 });

@@ -167,7 +167,7 @@ function weightingSection(statement: Statement, weighting: Weighting | undefined
   const readOnly = sharesTable((s) => `${s.share}%`);
 
   if (weighting.status === "approved") {
-    const by = weighting.approved_by === "auto" ? "Auto-approved" : "Approved by the Developer";
+    const by = { auto: "Auto-approved", simulated: "Approved for a simulated Developer", developer: "Approved by the Developer" }[weighting.approved_by ?? "developer"];
     return section(html`
       <p class="note"><strong>${by}</strong> on ${day(weighting.approved_at ?? "")}. ${source}${adjusted}. It is locked for this period.</p>
       ${readOnly}`);
@@ -195,6 +195,7 @@ const STATUS: Record<RoyaltyStatus, string> = {
   sent: "Sent via PayPal",
   "unclaimed-held": "Unclaimed, held",
   "rolled-over": "Rolled over",
+  simulated: "Simulated, no money sent",
 };
 
 const settleForm = (period: string, label: string, enabled = true) =>

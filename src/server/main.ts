@@ -7,7 +7,7 @@
 // without either, they come from Play counts. Until maintainers can Claim Projects, claimed Projects
 // are seeded from PLAYCOUNT_SEED_CLAIMS, e.g. "hono=sb-xyz@personal.example.com" (comma-separated),
 // so "settle now" can pay a sandbox account. PLAYCOUNT_SIMULATED_DEVELOPERS (a count, default 0)
-// seeds simulated Developers, labelled as such, with Budgets and Plays this period. Every hour the
+// seeds simulated Developers, labelled as such, with Budgets and Plays since the start of last period. Every hour the
 // monthly batch settles each Developer's ended periods.
 import { isProjectName } from "../play.ts";
 import { budgetCents } from "./app.ts";
@@ -62,7 +62,7 @@ if (!Number.isInteger(simulatedCount) || simulatedCount < 0 || simulatedCount > 
   process.exit(1);
 }
 const simulated = simulatedDevelopers({ ledger, count: simulatedCount, now: new Date() });
-if (simulated.length) console.log(`Seeded ${simulated.length} simulated Developers with Budgets and Plays this period.`);
+if (simulated.length) console.log(`Seeded ${simulated.length} simulated Developers with Budgets and Plays since the start of last period.`);
 
 const BATCH_EVERY_MS = 3600 * 1000;
 const server = await startServer({

@@ -14,6 +14,12 @@ export function periodOf(at: Date): string {
   return at.toISOString().slice(0, 7);
 }
 
+// The month after a period, e.g. "2026-12" → "2027-01".
+export function nextPeriod(period: string): string {
+  const [year, month] = period.split("-").map(Number);
+  return periodOf(new Date(Date.UTC(year, month, 1)));
+}
+
 // Per-Project totals of one Developer's Plays in one period, most Plays first.
 export function statementOf(plays: Play[], period: string): Statement {
   const lines = new Map<string, StatementLine>();

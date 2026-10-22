@@ -1,7 +1,8 @@
 // Simulated Developers: seeded demo data that shows maintainer totals across many Agents.
 // They are labelled everywhere: each one's name ends "(simulated)", the Developer and their
-// Budget are marked simulated, and so is every Settlement and payout note their Budget pays for.
-// Each has their own Budget and Play log, so their money pays only for their own Plays.
+// Budget are marked simulated, and so is every Weighting approval, Settlement and Royalty their
+// Budget pays for. Their Budgets collect no money, so their Royalties are recorded, never sent.
+// Each has their own Budget and Play log, so their Budget pays only for their own Plays.
 import { randomBytes } from "node:crypto";
 import type { Play } from "../play.ts";
 import type { Developer } from "./developers.ts";
@@ -39,7 +40,7 @@ function random(seed: number) {
   };
 }
 
-// One Agent's Plays from the start of the period up to `now`: a session or two on most days,
+// One Agent's Plays from `periodStart` up to `now`: a session or two on most days,
 // each a run of imports written and docs read, leaning on the first Projects of its stack.
 function playsFor(index: number, periodStart: Date, now: Date): Play[] {
   const rand = random(index + 1);
@@ -74,10 +75,11 @@ function playsFor(index: number, periodStart: Date, now: Date): Play[] {
 }
 
 // Seeds `count` simulated Developers into the Ledger, each with a Budget from the start of the
-// current period and the Plays their Agent made so far this period. Returns the Developers, to be
-// added to the Developers list.
+// previous period and the Plays their Agent made since, so the monthly batch has an ended period to
+// settle as soon as the service starts. Returns the Developers, to be added to the Developers list.
 export function simulatedDevelopers({ ledger, count, now }: { ledger: Ledger; count: number; now: Date }): Developer[] {
-  const periodStart = new Date(`${periodOf(now)}-01T00:00:00.000Z`);
+  const current = new Date(`${periodOf(now)}-01T00:00:00.000Z`);
+  const periodStart = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth() - 1, 1));
   return Array.from({ length: Math.min(count, MAX_SIMULATED) }, (_, i) => {
     const name = NAMES[i % NAMES.length] + (i >= NAMES.length ? ` ${Math.floor(i / NAMES.length) + 1}` : "");
     const developer: Developer = {

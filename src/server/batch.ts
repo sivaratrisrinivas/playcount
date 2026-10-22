@@ -5,29 +5,19 @@
 import type { Developer, Developers } from "./developers.ts";
 import type { Ledger } from "./ledger.ts";
 import type { SettlementResult } from "./settlement.ts";
-import { periodOf, statementOf } from "./statement.ts";
-import type { Weighting, WeightingResult } from "./weighting.ts";
+import { nextPeriod, periodOf, statementOf } from "./statement.ts";
+import type { weightingService } from "./weighting.ts";
 
 export type BatchDeps = {
   ledger: Ledger;
   developers: Developers;
-  weightings: {
-    current(developerId: string, period: string): Weighting | undefined;
-    propose(developerId: string, period: string): Promise<WeightingResult>;
-    approve(developerId: string, period: string): WeightingResult;
-  };
+  weightings: Pick<ReturnType<typeof weightingService>, "current" | "propose" | "approve">;
   settle(developerId: string, period: string): Promise<SettlementResult>;
   clock: () => Date;
 };
 
 // What one run did for each Developer it looked at, for the service log.
 export type BatchReport = { developer: string; period: string; outcome: string }[];
-
-// The month after a period, e.g. "2026-12" → "2027-01".
-export function nextPeriod(period: string) {
-  const [year, month] = period.split("-").map(Number);
-  return periodOf(new Date(Date.UTC(year, month, 1)));
-}
 
 export function monthlyBatch({ ledger, developers, weightings, settle, clock }: BatchDeps) {
   let running: Promise<BatchReport> | undefined;
@@ -50,8 +40,8 @@ export function monthlyBatch({ ledger, developers, weightings, settle, clock }: 
           weighting = proposed.weighting;
         }
         // Nobody is there to approve a simulated Developer's Weighting, so the batch does.
-        if (weighting.status === "proposed" && developer.simulated) {
-          const approved = weightings.approve(developer.id, period);
+        if (weighting.status === "proposed" && budget.simulated) {
+          const approved = weightings.approve(developer.id, period, "simulated");
           if (!approved.ok) return log(`could not approve the Weighting: ${approved.error}`);
           weighting = approved.weighting;
         }

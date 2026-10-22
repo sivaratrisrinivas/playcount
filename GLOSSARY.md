@@ -79,7 +79,7 @@ A person who funds a budget and whose coding agent produces plays.
 _Avoid_: User, customer, payer
 
 **Simulated developer**:
-A seeded stand-in for a Developer, with its own Budget and Play log, used to show Projects' totals across many Agents; it and everything its Budget pays for are labelled simulated.
+A seeded stand-in for a Developer, with its own Budget and Play log, used to show Projects' totals across many Agents; it and everything its Budget pays for are labelled simulated. Its Budget collects no money, so its Royalties are recorded but never sent.
 _Avoid_: Fake user, test account, bot
 
 **Agent**:
