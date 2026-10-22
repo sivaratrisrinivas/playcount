@@ -45,7 +45,7 @@ function runHook(env: Record<string, string> = { PLAYCOUNT_URL: server.url, PLAY
 
 beforeEach(async () => {
   ledger = inMemoryLedger();
-  server = await startServer({ ledger, developers: inMemoryDevelopers([dev]), dashboardDeveloperId: dev.id, port: 0 });
+  server = await startServer({ ledger, developers: inMemoryDevelopers([dev]), demoDeveloperId: dev.id, port: 0 });
   queueDir = mkdtempSync(join(tmpdir(), "playcount-queue-"));
 });
 afterEach(async () => {
@@ -107,7 +107,7 @@ it("queues Plays when PlayCount errors, and never fails the tool call", async ()
   const failing = await startServer({
     ledger: { recordPlays: () => { throw new Error("boom"); }, playsOf: () => [], onPlays: () => () => {} },
     developers: inMemoryDevelopers([dev]),
-    dashboardDeveloperId: dev.id,
+    demoDeveloperId: dev.id,
     port: 0,
   });
   try {

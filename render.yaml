@@ -12,7 +12,7 @@ services:
     startCommand: npm start
     healthCheckPath: /health
     envVars:
-      # The seeded Developer's PlayCount key. Render generates it; copy it into the hook config.
+      # The seeded demo Developer's PlayCount key, shown to visitors who have not signed in.
       - key: PLAYCOUNT_DEMO_KEY
         generateValue: true
       - key: PAYPAL_CLIENT_ID
@@ -22,6 +22,7 @@ services:
       # Claude is reached through AssemblyAI's LLM Gateway, not the Anthropic API.
       - key: ASSEMBLYAI_API_KEY
         sync: false
+      # GitHub OAuth app for Developer sign-in; its callback is <service URL>/auth/github/callback.
       - key: GITHUB_CLIENT_ID
         sync: false
       - key: GITHUB_CLIENT_SECRET

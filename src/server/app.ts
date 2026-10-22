@@ -1,19 +1,28 @@
 import { Hono, type Context } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { MAX_PLAYS_PER_BATCH as MAX_BATCH, parsePlay, type Play } from "../play.ts";
-import type { Developers } from "./developers.ts";
+import type { Developer, Developers } from "./developers.ts";
+import type { GitHub } from "./github.ts";
 import type { Ledger } from "./ledger.ts";
-import { dashboardPage, playRow } from "./dashboard.ts";
+import { dashboardPage, landingPage, playRow } from "./dashboard.ts";
 import { isPeriod, periodOf, statementOf } from "./statement.ts";
 
 export type AppDeps = {
   ledger: Ledger;
   developers: Developers;
-  // The seeded Developer the dashboard shows until GitHub sign-in exists (#8).
-  dashboardDeveloperId: string;
+  // The seeded Developer the dashboard shows to visitors who have not signed in.
+  demoDeveloperId?: string;
+  // GitHub sign-in; without it, only the seeded Developer exists.
+  github?: GitHub;
+  // The address Developers reach this service at, e.g. https://playcount.onrender.com.
+  // Behind a proxy the request's own URL can say http, so this is configured.
+  publicUrl?: string;
   // Decides the current period; tests pass a fixed one.
   clock?: () => Date;
 };
@@ -34,7 +43,21 @@ function parseCursor(value: string) {
 // The browser bundle isn't in the package's exports, so it is found next to the main entry.
 const AG_GRID = join(dirname(createRequire(import.meta.url).resolve("ag-grid-community")), "..", "ag-grid-community.min.js");
 
-export function createApp({ ledger, developers, dashboardDeveloperId, clock = () => new Date() }: AppDeps) {
+// The files the install command downloads to the Developer's machine, served from this checkout.
+// Only these are served: the hook, the docs tool and what they import, plus the installer.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const CAPTURE_FILES = ["src/play.ts", "src/capture/hook.ts", "src/capture/plays.ts", "src/capture/queue.ts", "src/capture/docs-server.ts"];
+const INSTALLER = "src/capture/install.ts";
+
+const SESSION = "pc_session";
+const OAUTH_STATE = "pc_oauth_state";
+const token = () => randomBytes(24).toString("base64url");
+
+// The one command a Developer pastes into a terminal to install capture (see install.ts).
+export const installCommand = (url: string, key: string) =>
+  `curl -fsSL ${url}/install.ts | node --input-type=module-typescript - ${url} ${key}`;
+
+export function createApp({ ledger, developers, demoDeveloperId, github, publicUrl, clock = () => new Date() }: AppDeps) {
   const app = new Hono();
   // Names this service run in stream cursors, so a browser's cursor from an earlier run is spotted.
   const run = (Date.now() + Math.random()).toString(36).replace(".", "");
@@ -44,6 +67,57 @@ export function createApp({ ledger, developers, dashboardDeveloperId, clock = ()
     const key = c.req.header("authorization")?.match(/^Bearer (.+)$/)?.[1];
     return key ? developers.byKey(key) : undefined;
   };
+
+  // Signed-in browsers, by session cookie. Kept in memory, like the Ledger for now.
+  const sessions = new Map<string, string>();
+  const signedIn = (c: Context): Developer | undefined => {
+    const id = sessions.get(getCookie(c, SESSION) ?? "");
+    return id ? developers.byId(id) : undefined;
+  };
+  // Whose dashboard this browser sees: its signed-in Developer, else the seeded demo Developer.
+  const viewerOf = (c: Context) => signedIn(c) ?? (demoDeveloperId ? developers.byId(demoDeveloperId) : undefined);
+
+  const baseUrl = (c: Context) => (publicUrl ?? new URL(c.req.url).origin).replace(/\/$/, "");
+  const cookieOptions = (c: Context) =>
+    ({ path: "/", httpOnly: true, sameSite: "Lax", secure: baseUrl(c).startsWith("https:") }) as const;
+  const callbackUrl = (c: Context) => `${baseUrl(c)}/auth/github/callback`;
+
+  app.get("/auth/github", (c) => {
+    if (!github) return c.text("GitHub sign-in is not configured on this PlayCount service.", 503);
+    const state = token();
+    setCookie(c, OAUTH_STATE, state, { ...cookieOptions(c), maxAge: 600 });
+    return c.redirect(github.authorizeUrl(state, callbackUrl(c)), 302);
+  });
+
+  app.get("/auth/github/callback", async (c) => {
+    if (!github) return c.text("GitHub sign-in is not configured on this PlayCount service.", 503);
+    const expected = getCookie(c, OAUTH_STATE);
+    deleteCookie(c, OAUTH_STATE, cookieOptions(c));
+    const { code, state } = c.req.query();
+    if (!expected || state !== expected) return c.text("This sign-in link has expired. Sign in again.", 400);
+    if (!code) return c.text("GitHub did not complete the sign-in.", 400);
+
+    const user = await github.userFromCode(code, callbackUrl(c)).catch(() => undefined);
+    if (!user) return c.text("GitHub did not accept this sign-in. Sign in again.", 401);
+    const session = token();
+    sessions.set(session, developers.signIn(user).id);
+    setCookie(c, SESSION, session, { ...cookieOptions(c), maxAge: 30 * 24 * 3600 });
+    return c.redirect("/", 302);
+  });
+
+  app.post("/auth/signout", (c) => {
+    sessions.delete(getCookie(c, SESSION) ?? "");
+    deleteCookie(c, SESSION, cookieOptions(c));
+    return c.redirect("/", 303);
+  });
+
+  // The session cookie is SameSite=Lax, so another site cannot post this form as the Developer.
+  app.post("/key/rotate", (c) => {
+    const developer = signedIn(c);
+    if (!developer) return c.text("Sign in to rotate your PlayCount key.", 401);
+    developers.rotateKey(developer.id);
+    return c.redirect("/", 303);
+  });
 
   app.post("/api/plays", async (c) => {
     const developer = developerOf(c);
@@ -71,9 +145,11 @@ export function createApp({ ledger, developers, dashboardDeveloperId, clock = ()
   // browser sends the last cursor it saw and gets every Play it missed. "statement" events carry
   // the current period's statement as it changes.
   app.get("/api/plays/stream", (c) => {
-    if (!developers.byId(dashboardDeveloperId)) return c.notFound();
+    const viewer = viewerOf(c);
+    if (!viewer) return c.notFound();
+    const developerId = viewer.id;
     return streamSSE(c, async (stream) => {
-      const recorded = ledger.playsOf(dashboardDeveloperId);
+      const recorded = ledger.playsOf(developerId);
       const from = parseCursor(c.req.header("last-event-id") ?? c.req.query("since") ?? cursor(recorded.length));
 
       // Writes go out in order: a missed-Play replay, then live Plays as the Ledger records them.
@@ -90,12 +166,12 @@ export function createApp({ ledger, developers, dashboardDeveloperId, clock = ()
         statementQueued = true;
         write(() => {
           statementQueued = false;
-          const statement = statementOf(ledger.playsOf(dashboardDeveloperId), periodOf(clock()));
+          const statement = statementOf(ledger.playsOf(developerId), periodOf(clock()));
           return stream.writeSSE({ event: "statement", data: JSON.stringify(statement) });
         });
       };
 
-      const stop = ledger.onPlays(dashboardDeveloperId, sendPlay);
+      const stop = ledger.onPlays(developerId, sendPlay);
       stream.onAbort(stop);
 
       if (from?.run !== run || from.count > recorded.length) {
@@ -127,10 +203,23 @@ export function createApp({ ledger, developers, dashboardDeveloperId, clock = ()
   app.get("/health", (c) => c.json({ status: "ok" }));
 
   app.get("/", (c) => {
-    const developer = developers.byId(dashboardDeveloperId);
-    const plays = developer ? ledger.playsOf(developer.id).reverse() : [];
+    const developer = signedIn(c);
+    const viewer = viewerOf(c);
+    const signIn = github ? "available" : "off";
+    if (!viewer) return c.html(landingPage(signIn));
+    const plays = ledger.playsOf(viewer.id).reverse();
     const statement = statementOf(plays, periodOf(clock()));
-    return c.html(dashboardPage(developer?.name ?? "Unknown developer", plays, statement, cursor(plays.length)));
+    const setup = developer && { key: developer.key, installCommand: installCommand(baseUrl(c), developer.key) };
+    return c.html(dashboardPage({ name: viewer.name, plays, statement, cursor: cursor(plays.length), setup, signIn }));
+  });
+
+  const serveSource = async (c: Context, file: string) =>
+    c.body(await readFile(join(ROOT, file), "utf8"), 200, { "content-type": "text/plain; charset=utf-8" });
+  app.get("/install.ts", (c) => serveSource(c, INSTALLER));
+  app.get("/capture/files.json", (c) => c.json(CAPTURE_FILES));
+  app.get("/capture/*", (c) => {
+    const file = c.req.path.slice("/capture/".length);
+    return CAPTURE_FILES.includes(file) ? serveSource(c, file) : c.notFound();
   });
 
   let agGrid: Promise<string> | undefined;
