@@ -44,8 +44,8 @@ if (demo) {
   ledger.recordBudget(demo.id, { amountCents: cents, since: new Date().toISOString() });
 }
 for (const entry of (env.PLAYCOUNT_SEED_CLAIMS ?? "").split(",").filter((e) => e.trim())) {
-  const [project, payoutEmail] = entry.split("=").map((part) => part?.trim() ?? "");
-  if (!isProjectName(project) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payoutEmail ?? "")) {
+  const [project = "", payoutEmail = ""] = entry.split("=").map((part) => part.trim());
+  if (!isProjectName(project) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payoutEmail)) {
     console.error(`PLAYCOUNT_SEED_CLAIMS entries are project=payout-email; "${entry}" is not.`);
     process.exit(1);
   }

@@ -236,6 +236,31 @@ describe("Rollovers", () => {
   });
 });
 
+describe("Settling in order", () => {
+  it("refuses a period earlier than one already settled, so a Rollover only moves forward", async () => {
+    budget(ada.id, 10);
+    now = new Date("2026-11-20T00:00:00.000Z");
+    await settled("2026-11");
+    const res = await settle("2026-10");
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toMatch(/2026-11 is already settled/);
+  });
+});
+
+describe("Small Budgets", () => {
+  it("rolls everything over when the spendable amount cannot cover the fees set aside", async () => {
+    for (const p of ["a", "b", "c", "d", "e"]) ledger.recordClaim(p, { payoutEmail: `${p}@personal.example.com` });
+    budget(ada.id, 1);
+    await postPlays(["a", "b", "c", "d", "e"].map((p) => play(p)));
+    await approveWeighting({ a: 20, b: 20, c: 20, d: 20, e: 20 });
+    const s = await settled();
+    // Five fees ($1.25) would exceed the $1 Budget, so nothing is paid and every cent rolls over.
+    expect(s.royalties.every((r) => r.status === "rolled-over" && r.amount_cents === 0)).toBe(true);
+    expect(s).toMatchObject({ payouts: 0, fees_cents: 0, rolled_over_cents: 100 });
+    expect(paypal.payouts).toEqual([]);
+  });
+});
+
 describe("Idempotent Settlement", () => {
   it("never pays a Royalty twice when the same period is settled again", async () => {
     budget(ada.id, 10);

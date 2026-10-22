@@ -5,7 +5,7 @@
 // same batch id, which PayPal refuses to pay twice.
 import { randomBytes } from "node:crypto";
 import type { Ledger } from "./ledger.ts";
-import type { PayoutBatch, PayPal } from "./paypal.ts";
+import type { PayoutBatch, PayoutItem, PayPal } from "./paypal.ts";
 import { periodOf, statementOf } from "./statement.ts";
 import type { Weighting } from "./weighting.ts";
 
@@ -47,6 +47,7 @@ export type SettlementResult =
   | { ok: false; status: 404 | 409 | 422 | 502 | 503; error: string };
 
 const fail = (status: 404 | 409 | 422 | 502 | 503, error: string): SettlementResult => ({ ok: false, status, error });
+const NO_PAYPAL = "PayPal is not configured on this PlayCount service, so Royalties cannot be paid";
 
 // What a Developer or the dashboard sees: the payout addresses stay in the Ledger.
 export type PublicSettlement = Omit<Settlement, "batch">;
@@ -85,47 +86,49 @@ export function settlementService({
 
   // The Rollover the Developer's next Settlement starts with: everything rolled over so far,
   // less what earlier Settlements already carried in.
-  const rolloverOf = (developerId: string) =>
-    ledger.settlementsOf(developerId).reduce((total, s) => total + s.rolled_over_cents - s.rollover_in_cents, 0);
+  const rolloverOf = (settled: Settlement[]) => settled.reduce((total, s) => total + s.rolled_over_cents - s.rollover_in_cents, 0);
 
   function compute(developerId: string, period: string): Settlement | SettlementResult {
     const budget = ledger.budgetOf(developerId);
     if (!budget) return fail(422, "there is no Budget to settle; choose one first");
     if (period > periodOf(clock())) return fail(422, "this period has not begun");
     if (period < periodOf(new Date(budget.since))) return fail(422, "your Budget began after this period");
+    // Periods settle in order, so a Rollover only ever moves forward to a later period.
+    const settled = ledger.settlementsOf(developerId);
+    const latest = settled.map((s) => s.period).sort().at(-1);
+    if (latest && period < latest) return fail(422, `${latest} is already settled, so earlier periods can no longer be`);
 
-    const rolloverIn = rolloverOf(developerId);
+    const rolloverIn = rolloverOf(settled);
     const spendable = budget.amountCents + rolloverIn;
-    let royalties: Royalty[] = [];
+    const royalties: Royalty[] = [];
+    const items: PayoutItem[] = [];
     // A period with no Plays needs no Weighting: the whole spendable amount rolls over.
     if (statementOf(ledger.playsOf(developerId), period).projects.length) {
       const weighting = currentWeighting(developerId, period);
       if (weighting?.status !== "approved") {
         return fail(409, weighting ? "approve this period's Weighting before settling" : "propose and approve this period's Weighting before settling");
       }
-      const shares = weighting.shares.filter((s) => s.share > 0);
+      const shares = weighting.shares.filter((s) => s.share > 0).map((s) => ({ ...s, claim: ledger.claimOf(s.project) }));
       // Each claimed Project's payout fee is set aside first. If its Royalty then rolls over,
       // so does the fee set aside for it.
-      const claimed = shares.filter((s) => ledger.claimOf(s.project)).length;
+      const claimed = shares.filter((s) => s.claim).length;
       const amounts = split(Math.max(0, spendable - claimed * PAYOUT_FEE_CENTS), shares.map((s) => Math.round(s.share * 100)));
-      royalties = shares.map((s, i) => ({
-        project: s.project,
-        share: s.share,
-        amount_cents: amounts[i],
-        status: amounts[i] < MIN_ROYALTY_CENTS ? "rolled-over" : ledger.claimOf(s.project) ? "sending" : "unclaimed-held",
-      }));
+      shares.forEach((s, i) => {
+        const status = amounts[i] < MIN_ROYALTY_CENTS ? "rolled-over" : s.claim ? "sending" : "unclaimed-held";
+        royalties.push({ project: s.project, share: s.share, amount_cents: amounts[i], status });
+        if (status === "sending") {
+          items.push({
+            project: s.project,
+            receiver: s.claim!.payoutEmail,
+            amountCents: amounts[i],
+            note: `Developers' AI coding agents relied on ${s.project} in ${period}. This royalty comes from their PlayCount budgets.`,
+          });
+        }
+      });
     }
 
+    if (items.length && !paypal) return fail(503, NO_PAYPAL);
     const id = `pc-${randomBytes(8).toString("hex")}`;
-    const items = royalties
-      .filter((r) => r.status === "sending")
-      .map((r) => ({
-        project: r.project,
-        receiver: ledger.claimOf(r.project)!.payoutEmail,
-        amountCents: r.amount_cents,
-        note: `Developers' AI coding agents relied on ${r.project} in ${period}. This royalty comes from their PlayCount budgets.`,
-      }));
-    if (items.length && !paypal) return fail(503, "PayPal is not configured on this PlayCount service, so Royalties cannot be paid");
     const sent = sum(royalties, "sending");
     const held = sum(royalties, "unclaimed-held");
     const fees = items.length * PAYOUT_FEE_CENTS;
@@ -153,6 +156,7 @@ export function settlementService({
       const done: Settlement = {
         ...settlement,
         status: "settled",
+        settled_at: clock().toISOString(),
         payout_batch_id,
         royalties: settlement.royalties.map((r) => (r.status === "sending" ? { ...r, status: "sent" } : r)),
       };
@@ -160,7 +164,7 @@ export function settlementService({
       return { ok: true, status: 201, settlement: done };
     };
     if (!settlement.batch) return settled();
-    if (!paypal) return fail(503, "PayPal is not configured on this PlayCount service, so Royalties cannot be paid");
+    if (!paypal) return fail(503, NO_PAYPAL);
 
     paying.add(key);
     try {
