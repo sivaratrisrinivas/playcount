@@ -24,7 +24,7 @@ The amount owed to one project from one settlement.
 _Avoid_: Tip, share, payout (a payout is the transfer that delivers a royalty)
 
 **Unclaimed royalty**:
-A royalty owed to a project that has no payout address yet; it stays in the pool until the project is claimed.
+A royalty owed to a project that has no payout address yet; it stays in the pool until the project is claimed. Once it is, each developer's next settlement pays what their earlier settlements held for it (the settlement's _releases_).
 _Avoid_: Pending payout, escrowed funds
 
 **Rollover**:

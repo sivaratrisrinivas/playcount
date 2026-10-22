@@ -7,20 +7,24 @@ import type { Ledger } from "./ledger.ts";
 import { githubRepoOf, type Npm } from "./npm.ts";
 import { heldByProject } from "./settlement.ts";
 
+export const projectPath = (project: string) => `/projects/${project}`;
+
 export const isPayoutEmail = (email: string) => email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 // What anyone may see about a Project: never its payout address.
 export type ProjectView = { project: string; held_cents: number; claimed: boolean; claimed_by?: string; claimed_at?: string };
 
-export type ClaimResult = { ok: true } | { ok: false; status: 400 | 403 | 404 | 409 | 422 | 502 | 503; error: string };
-const fail = (status: 400 | 403 | 404 | 409 | 422 | 502 | 503, error: string): ClaimResult => ({ ok: false, status, error });
+type ClaimError = 400 | 403 | 404 | 409 | 422 | 502 | 503;
+export type ClaimResult = { ok: true } | { ok: false; status: ClaimError; error: string };
+const fail = (status: ClaimError, error: string): ClaimResult => ({ ok: false, status, error });
 
 export function claimService({ ledger, npm, github, clock }: { ledger: Ledger; npm?: Npm; github?: GitHub; clock: () => Date }) {
   return {
     view(project: string): ProjectView {
       const claim = ledger.claimOf(project);
-      // Released royalties are subtracted when recorded, so this never dips below what is truly held.
-      const held = Math.max(0, heldByProject(ledger.allSettlements()).get(project) ?? 0);
+      // A release is shown as paid only once PayPal confirms its batch; until then it is still held.
+      const settlements = ledger.allSettlements().map((s) => (s.status === "settled" ? s : { ...s, releases: [] }));
+      const held = heldByProject(settlements).get(project) ?? 0;
       return { project, held_cents: held, claimed: Boolean(claim), claimed_by: claim?.claimedBy, claimed_at: claim?.claimedAt };
     },
 

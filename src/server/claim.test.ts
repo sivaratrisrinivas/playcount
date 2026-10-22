@@ -308,6 +308,22 @@ describe("Paying held royalties after a Claim", () => {
     expect(paypal.payouts).toHaveLength(batches);
   });
 
+  it("shows them held until PayPal confirms the batch that pays them, and a retry pays them once", async () => {
+    budget(ada.id, 10);
+    const held = heldZod(await octoberHoldsZod());
+    await claim(await maintainer(), "zod");
+
+    now = new Date("2026-11-20T18:00:00.000Z");
+    paypal.failNext();
+    expect((await api("/api/settle?period=2026-11", { method: "POST" })).status).toBe(502);
+    expect(await view("zod")).toMatchObject({ held_cents: held });
+
+    const retried = await settled("2026-11");
+    expect(retried.releases).toEqual([{ project: "zod", amount_cents: held, status: "sent" }]);
+    expect(paypal.payouts.filter((b) => b.items.some((i) => i.project === "zod" && i.amountCents === held))).toHaveLength(1);
+    expect(await view("zod")).toMatchObject({ held_cents: 0 });
+  });
+
   it("pays them even in a period with no Plays", async () => {
     budget(ada.id, 10);
     const held = heldZod(await octoberHoldsZod());

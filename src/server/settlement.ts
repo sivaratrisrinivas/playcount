@@ -1,9 +1,9 @@
 // Settlement: turns a Developer's approved Weighting for one period into Royalties, pays the
 // claimed Projects in one PayPal Payouts batch, holds Unclaimed royalties in the Ledger and rolls
 // Royalties under $1 over to the Developer's next Settlement. Unclaimed royalties the Developer's
-// earlier Settlements held for a Project are paid in their first Settlement after it is claimed. A period is settled once: settling
-// it again returns the same Settlement, and a batch PayPal did not confirm is retried under the
-// same batch id, which PayPal refuses to pay twice.
+// earlier Settlements held for a Project are paid in their first Settlement after it is claimed.
+// A period is settled once: settling it again returns the same Settlement, and a batch PayPal did
+// not confirm is retried under the same batch id, which PayPal refuses to pay twice.
 import { randomBytes } from "node:crypto";
 import type { Claim, Ledger } from "./ledger.ts";
 import type { PayoutBatch, PayoutItem, PayPal } from "./paypal.ts";

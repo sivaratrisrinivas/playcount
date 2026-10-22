@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isProjectName, MAX_PLAYS_PER_BATCH as MAX_BATCH, parsePlay, type Play } from "../play.ts";
-import { claimService } from "./claims.ts";
+import { claimService, projectPath } from "./claims.ts";
 import type { Developer, Developers } from "./developers.ts";
 import type { GitHub } from "./github.ts";
 import { centsOf } from "./money.ts";
@@ -68,6 +68,9 @@ const OAUTH_STATE = "pc_oauth_state";
 const OAUTH_NEXT = "pc_oauth_next";
 const token = () => randomBytes(24).toString("base64url");
 
+// An API error as a sentence for a browser: "the Project is claimed" → "The Project is claimed."
+const sentence = (error: string) => `${error[0].toUpperCase()}${error.slice(1)}.`;
+
 // The Project a path names after its prefix, e.g. "/projects/@scope/pkg" → "@scope/pkg".
 function projectIn(path: string, prefix: string) {
   if (!path.startsWith(prefix)) return undefined;
@@ -79,7 +82,6 @@ function projectIn(path: string, prefix: string) {
   }
   return isProjectName(name) ? name : undefined;
 }
-export const projectPath = (project: string) => `/projects/${project}`;
 
 // A Budget is a whole or two-decimal dollar amount from $1 to $1000 a month.
 const MIN_BUDGET_CENTS = 100;
@@ -333,7 +335,7 @@ export function createApp({ ledger, developers, demoDeveloperId, github, npm, pa
     const period = typeof form.period === "string" ? form.period : periodOf(clock());
     if (!isPeriod(period)) return c.text("The period must be a month written YYYY-MM.", 400);
     const result = await then(developer.id, period, form);
-    return result.ok ? c.redirect("/#weighting", 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
+    return result.ok ? c.redirect("/#weighting", 303) : c.text(sentence(result.error), result.status);
   };
   const list = (value: unknown) => (Array.isArray(value) ? value : value === undefined ? [] : [value]);
   app.post("/weighting/propose", (c) => weightingForm(c, (id, period) => weightings.propose(id, period)));
@@ -375,7 +377,7 @@ export function createApp({ ledger, developers, demoDeveloperId, github, npm, pa
     const period = typeof form.period === "string" ? form.period : periodOf(clock());
     if (!isPeriod(period)) return c.text("The period must be a month written YYYY-MM.", 400);
     const result = await settlements.settle(developer.id, period);
-    return result.ok ? c.redirect("/#settlement", 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
+    return result.ok ? c.redirect("/#settlement", 303) : c.text(sentence(result.error), result.status);
   });
 
   // A Project's public page: the Unclaimed royalties held for it, and for a signed-in maintainer,
@@ -398,7 +400,7 @@ export function createApp({ ledger, developers, demoDeveloperId, github, npm, pa
     if (!session) return c.text(`Sign in with GitHub to claim ${project}.`, 401);
     const email = (await c.req.parseBody()).payout_email;
     const result = await claims.claim(project, session, typeof email === "string" ? email.trim() : "");
-    return result.ok ? c.redirect(projectPath(project), 303) : c.text(`${result.error[0].toUpperCase()}${result.error.slice(1)}.`, result.status);
+    return result.ok ? c.redirect(projectPath(project), 303) : c.text(sentence(result.error), result.status);
   });
 
   // Render polls this before switching traffic to a new deploy.

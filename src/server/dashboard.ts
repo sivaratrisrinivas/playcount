@@ -1,6 +1,6 @@
 import { html, raw } from "hono/html";
 import type { Play } from "../play.ts";
-import type { ProjectView } from "./claims.ts";
+import { projectPath, type ProjectView } from "./claims.ts";
 import type { Budget } from "./ledger.ts";
 import { dollars } from "./money.ts";
 import { PAYOUT_FEE_CENTS, type PublicSettlement, type RoyaltyStatus } from "./settlement.ts";
@@ -65,14 +65,14 @@ ${head()}
 // A Project's public page: what is held for it and whether it is claimed. A maintainer signs in
 // with GitHub from here, then Claims it with the PayPal email its Royalties go to.
 export function projectPage({ view, signedInAs, signIn }: { view: ProjectView; signedInAs?: string; signIn: SignIn }) {
-  const path = `/projects/${view.project}`;
+  const path = projectPath(view.project);
   const held = view.held_cents
     ? html`<p><strong id="held">${dollars(view.held_cents)}</strong> in Unclaimed royalties is held for ${view.project}, from Developers whose coding agents relied on it.</p>`
     : html`<p id="held-none">No Unclaimed royalties are held for ${view.project} right now.</p>`;
   let claim;
   if (view.claimed) {
     const by = view.claimed_by ? html` by ${view.claimed_by} on ${day(view.claimed_at ?? "")}` : "";
-    const paid = view.held_cents ? " What is held is paid in each Developer's next Settlement." : "";
+    const paid = view.held_cents ? " What is held is paid as each Developer whose agent played it next settles." : "";
     claim = html`<p class="note" id="claimed"><strong>Claimed${by}.</strong> Its Royalties are paid through PayPal.${paid}</p>`;
   } else if (signedInAs) {
     claim = html`<h2>Claim ${view.project}</h2>
@@ -82,7 +82,7 @@ export function projectPage({ view, signedInAs, signIn }: { view: ProjectView; s
         <button type="submit" class="primary">Claim ${view.project}</button>
       </form>`;
   } else if (signIn === "available") {
-    claim = html`<h2>Maintain ${view.project}?</h2>
+    claim = html`<h2>Claim ${view.project}</h2>
       <p>Claim it to be paid what is held and every Royalty after. You need push access to the GitHub repo its npm package names.</p>
       <p><a class="button" href="/auth/github?next=${encodeURIComponent(path)}">Sign in with GitHub to claim</a></p>`;
   } else {
@@ -270,7 +270,7 @@ function settlementSection(statement: Statement, weighting: Weighting | undefine
       <table>
         <thead><tr><th>Project</th><th class="num">Share</th><th class="num">Royalty</th><th>Status</th></tr></thead>
         <tbody>${s.royalties.map(
-          (r) => html`<tr data-project="${r.project}" data-status="${r.status}"><td>${r.status === "unclaimed-held" ? html`<a href="/projects/${r.project}">${r.project}</a>` : r.project}</td><td class="num">${r.share}%</td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}">${STATUS[r.status]}</span></td></tr>`,
+          (r) => html`<tr data-project="${r.project}" data-status="${r.status}"><td>${r.status === "unclaimed-held" ? html`<a href="${projectPath(r.project)}">${r.project}</a>` : r.project}</td><td class="num">${r.share}%</td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}">${STATUS[r.status]}</span></td></tr>`,
         )}${s.releases.map(
           (r) => html`<tr data-project="${r.project}" data-status="released"><td>${r.project} <span class="hint">held until claimed, from earlier Settlements</span></td><td class="num"></td><td class="num">${dollars(r.amount_cents)}</td><td><span class="status ${r.status}">${STATUS[r.status]}</span></td></tr>`,
         )}</tbody>
