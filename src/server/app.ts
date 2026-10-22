@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { MAX_PLAYS_PER_BATCH as MAX_BATCH, parsePlay, type Play } from "../play.ts";
 import type { Developer, Developers } from "./developers.ts";
 import type { GitHub } from "./github.ts";
+import { isSubscriptionId, type PayPal } from "./paypal.ts";
 import type { Ledger } from "./ledger.ts";
 import { dashboardPage, landingPage, playRow } from "./dashboard.ts";
 import { isPeriod, periodOf, statementOf } from "./statement.ts";
@@ -20,6 +21,8 @@ export type AppDeps = {
   demoDeveloperId?: string;
   // GitHub sign-in; without it, only the seeded Developer exists.
   github?: GitHub;
+  // PayPal Subscriptions for Developers' Budgets; without it, no Budget can be chosen.
+  paypal?: PayPal;
   // The address Developers reach this service at, e.g. https://playcount.onrender.com.
   // Behind a proxy the request's own URL can say http, so this is configured.
   publicUrl?: string;
@@ -53,11 +56,20 @@ const SESSION = "pc_session";
 const OAUTH_STATE = "pc_oauth_state";
 const token = () => randomBytes(24).toString("base64url");
 
+// A Budget is a whole or two-decimal dollar amount from $1 to $1000 a month.
+const MIN_BUDGET_CENTS = 100;
+const MAX_BUDGET_CENTS = 100_000;
+function budgetCents(amount: unknown) {
+  if (typeof amount !== "string" || !/^\d{1,4}(\.\d{1,2})?$/.test(amount.trim())) return undefined;
+  const cents = Math.round(Number(amount) * 100);
+  return cents >= MIN_BUDGET_CENTS && cents <= MAX_BUDGET_CENTS ? cents : undefined;
+}
+
 // The one command a Developer pastes into a terminal to install capture (see install.ts).
 export const installCommand = (url: string, key: string) =>
   `curl -fsSL ${url}/install.ts | node --input-type=module-typescript - ${url} ${key}`;
 
-export function createApp({ ledger, developers, demoDeveloperId, github, publicUrl, clock = () => new Date() }: AppDeps) {
+export function createApp({ ledger, developers, demoDeveloperId, github, paypal, publicUrl, clock = () => new Date() }: AppDeps) {
   const app = new Hono();
   // Names this service run in stream cursors, so a browser's cursor from an earlier run is spotted.
   const run = (Date.now() + Math.random()).toString(36).replace(".", "");
@@ -118,6 +130,53 @@ export function createApp({ ledger, developers, demoDeveloperId, github, publicU
     developers.rotateKey(developer.id);
     return c.redirect("/", 303);
   });
+
+  // The Developer picks a monthly Budget and is sent to PayPal to approve it as a Subscription.
+  // PayPal charges the first month at approval and then returns the browser to /budget/return.
+  app.post("/budget", async (c) => {
+    if (!paypal) return c.text("PayPal is not configured on this PlayCount service.", 503);
+    const developer = signedIn(c);
+    if (!developer) return c.text("Sign in to choose a Budget.", 401);
+    if (ledger.budgetOf(developer.id)) return c.text("You already have an active Budget.", 409);
+    const amountCents = budgetCents((await c.req.parseBody()).amount);
+    if (!amountCents) return c.text("Choose a monthly Budget between $1 and $1000.", 400);
+
+    const created = await paypal
+      .createSubscription({
+        amountCents,
+        developerId: developer.id,
+        returnUrl: `${baseUrl(c)}/budget/return`,
+        cancelUrl: `${baseUrl(c)}/budget/cancel`,
+      })
+      .catch((err) => console.error("PayPal createSubscription failed:", err));
+    if (!created) return c.text("PayPal did not create the Subscription. Try again in a moment.", 502);
+    return c.redirect(created.approveUrl, 303);
+  });
+
+  // PayPal's return link. The Budget is recorded only from what PayPal says about the
+  // Subscription: it must be ACTIVE and have been created for this Developer.
+  app.get("/budget/return", async (c) => {
+    if (!paypal) return c.text("PayPal is not configured on this PlayCount service.", 503);
+    const developer = signedIn(c);
+    if (!developer) return c.text("Sign in again to finish choosing your Budget.", 401);
+    const id = c.req.query("subscription_id") ?? "";
+    if (!isSubscriptionId(id)) return c.text("PayPal has no such Subscription.", 400);
+    const sub = await paypal.subscription(id).catch((err) => {
+      console.error("PayPal subscription lookup failed:", err);
+      return null;
+    });
+    if (sub === undefined) return c.text("PayPal has no such Subscription.", 400);
+    if (!sub) return c.text("PayPal did not answer. Reload this page in a moment.", 502);
+    if (sub.developerId !== developer.id) return c.text("This Subscription belongs to another Developer.", 403);
+    if (sub.status === "APPROVED") return c.text("PayPal is still activating your Subscription. Reload this page in a few seconds.", 202);
+    if (sub.status !== "ACTIVE") return c.text("This Subscription was not approved, so no Budget was recorded.", 402);
+
+    ledger.recordBudget(developer.id, { amountCents: sub.amountCents, subscriptionId: sub.id, since: clock().toISOString() });
+    return c.redirect("/", 303);
+  });
+
+  // The Developer cancelled on PayPal's page; the Subscription was never approved, so nothing is recorded.
+  app.get("/budget/cancel", (c) => c.redirect("/", 303));
 
   app.post("/api/plays", async (c) => {
     const developer = developerOf(c);
@@ -210,7 +269,10 @@ export function createApp({ ledger, developers, demoDeveloperId, github, publicU
     const plays = ledger.playsOf(viewer.id).reverse();
     const statement = statementOf(plays, periodOf(clock()));
     const setup = developer && { key: developer.key, installCommand: installCommand(baseUrl(c), developer.key) };
-    return c.html(dashboardPage({ name: viewer.name, plays, statement, cursor: cursor(plays.length), setup, signIn }));
+    const budget = ledger.budgetOf(viewer.id);
+    // Only a signed-in Developer without a Budget is offered the form, and only when PayPal is set up.
+    const budgetForm = Boolean(developer && paypal && !budget);
+    return c.html(dashboardPage({ name: viewer.name, plays, statement, cursor: cursor(plays.length), setup, signIn, budget, budgetForm }));
   });
 
   const serveSource = async (c: Context, file: string) =>

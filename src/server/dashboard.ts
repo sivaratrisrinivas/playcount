@@ -1,5 +1,6 @@
 import { html, raw } from "hono/html";
 import type { Play } from "../play.ts";
+import type { Budget } from "./ledger.ts";
 import type { Statement } from "./statement.ts";
 
 // Whether this service offers GitHub sign-in ("off" when it has no GitHub OAuth app configured).
@@ -14,6 +15,10 @@ export type DashboardView = {
   signIn: SignIn;
   // Present only for the signed-in Developer's own dashboard.
   setup?: { key: string; installCommand: string };
+  // The Developer's active Budget, if they have one.
+  budget?: Budget;
+  // Whether to offer the form that starts a PayPal Subscription for a Budget.
+  budgetForm: boolean;
 };
 
 const head = () => html`<head>
@@ -61,10 +66,34 @@ function setupSection({ key, installCommand }: { key: string; installCommand: st
     </section>`;
 }
 
+const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+// The active Budget, or for a signed-in Developer without one, the form that funds one through PayPal.
+function budgetSection(budget: Budget | undefined, budgetForm: boolean) {
+  if (budget) {
+    const source = budget.subscriptionId
+      ? html`PayPal Subscription <code>${budget.subscriptionId}</code>, active since ${budget.since.slice(0, 10)}`
+      : html`a seeded demo Budget, not charged through PayPal`;
+    return html`<section id="budget">
+      <h2>Budget</h2>
+      <p><strong id="budget-amount">${dollars(budget.amountCents)}</strong> a month, split among the projects your Agent plays. <span class="hint">${source}</span></p>
+    </section>`;
+  }
+  if (!budgetForm) return "";
+  return html`<section id="budget">
+      <h2>Budget</h2>
+      <p>Choose what you pay each month. PayPal charges the first month when you approve, and it is split among the projects your Agent plays.</p>
+      <form method="post" action="/budget" class="budget">
+        <label>$ <input name="amount" type="number" min="1" max="1000" step="0.01" value="10" required></label> a month
+        <button type="submit">Approve with PayPal</button>
+      </form>
+    </section>`;
+}
+
 // The Developer's dashboard: the current period's statement, then their Plays, newest first.
 // It renders the Plays recorded so far, then follows the live Play stream so the counter and
 // list update while the Agent works. A visitor who has not signed in sees the demo Developer's.
-export function dashboardPage({ name, plays, statement, cursor, signIn, setup }: DashboardView) {
+export function dashboardPage({ name, plays, statement, cursor, signIn, setup, budget, budgetForm }: DashboardView) {
   return html`<!doctype html>
 <html lang="en">
 ${head()}
@@ -72,6 +101,7 @@ ${head()}
   <main>
     ${header(Boolean(setup), signIn)}
     ${setup ? setupSection(setup) : ""}
+    ${budgetSection(budget, budgetForm)}
     <h2 id="statement-title">Statement for ${statement.period}</h2>
     <p id="statement-empty" ${statement.projects.length ? "hidden" : ""}>No Plays this period yet.</p>
     <div id="statement-grid" ${statement.projects.length ? "" : "hidden"}></div>
@@ -189,6 +219,8 @@ const STYLE = `
   .command { display: flex; gap: 8px; align-items: flex-start; }
   .command pre { flex: 1; margin: 0; padding: 10px; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
   code { overflow-wrap: anywhere; }
+  form.budget input { width: 6em; font: inherit; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); }
+  form.budget button { margin-left: 8px; }
   .hint { margin-left: 8px; font-size: 13px; color: var(--muted); }
   .live { margin-left: 8px; font-size: 13px; color: var(--muted); }
   .live::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--muted); vertical-align: 1px; }
